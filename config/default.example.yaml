@@ -45,6 +45,12 @@ stt:
   # model. Anything else is resolved as a Hugging Face repository id, so a
   # `models/ggml-*.bin` path from whisper.cpp will NOT work here.
   model: "small"
+  # Words to bias the recogniser toward (DESIGN section 4.4). Proper nouns are
+  # where an open-vocabulary model fails hardest -- without this, "うば茶" comes
+  # back as "うばちゃん". Add your own names, projects and jargon here.
+  # Empty string disables it. Note it does NOT help the wake word: a two-mora
+  # phrase in isolation gives the bias nothing to act on.
+  initial_prompt: "ぽんず"
   # BCP-47-ish hint passed to the STT backend; "ja" matches the "ぽんず" wake
   # phrase and the assistant's primary language (DESIGN section 1).
   language: "ja"

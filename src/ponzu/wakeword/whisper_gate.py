@@ -165,8 +165,14 @@ class WhisperWakeWord:
 
         # A separate, cheap model from `stt.model` (ADR-013), and always
         # Japanese -- the wake phrase is fixed regardless of `stt.language`.
+        # No `initial_prompt`: measured, it does not help here. A two-mora
+        # phrase in isolation gives the bias nothing to act on -- `ぽんず` still
+        # comes back as `コンズ` with it set (DESIGN section 4.4).
         gate_stt_config = SttConfig(
-            provider="faster_whisper", model=config.model, language="ja"
+            provider="faster_whisper",
+            model=config.model,
+            language="ja",
+            initial_prompt="",
         )
         self._recognizer = WhisperRecognizer(gate_stt_config, logger=self._logger)
 

@@ -57,6 +57,9 @@ class SttConfig:
     provider: str
     model: str
     language: str
+    # Vocabulary bias passed to the recogniser (DESIGN section 4.4). Empty
+    # disables it.
+    initial_prompt: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +167,10 @@ _DEFAULTS: dict[str, Any] = {
         "provider": "faster_whisper",
         "model": "small",
         "language": "ja",
+        # Seeds the recogniser's vocabulary (DESIGN section 4.4). Proper nouns
+        # are where it fails hardest, and the assistant then reasons
+        # confidently about the wrong word. Users should add their own terms.
+        "initial_prompt": "ぽんず",
     },
     "llm": {
         "provider": "ollama",

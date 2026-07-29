@@ -220,6 +220,24 @@ duration_ms
 
 Confidence may be unavailable depending on the backend.
 
+### Vocabulary Biasing
+
+`stt.initial_prompt` seeds the recogniser with words it would otherwise not
+reach for. Proper nouns are where an open-vocabulary model fails hardest:
+"うば茶" came back as "うばちゃん" and "奪茶", and the assistant then confidently
+"corrected" the user's spelling.
+
+Measured on the `small` model:
+
+| | Without | With |
+| --- | --- | --- |
+| うば茶 | うばちゃ | うば茶 |
+| うば茶に書いて | うばちゃんに書いて | うば茶に書いて |
+
+It does **not** help the wake gate. A two-mora phrase in isolation gives the
+model no context for the bias to act on — `ぽんず` still comes back as `コンズ`
+with the prompt set, so ADR-013's edit-distance match stays necessary.
+
 ---
 
 ## 4.5 Local LLM Adapter
@@ -265,6 +283,13 @@ Ponzu's identity must remain independent of its voice provider.
 - Minimal unnecessary chatter
 - Occasional light humor
 - No claim of actions not actually performed
+- Asks rather than guesses when the input looks garbled
+
+Speech recognition errors are unavoidable, so the assistant receives malformed
+input as a matter of course. Asserting a confident interpretation of a garbled
+proper noun is the failure mode observed in practice — told "うば茶" and given
+"こっちゃんのうばっちゃん", it replied that this was a typo and stated the
+"correct" spelling, which it had no basis for.
 
 ### Prompt Inputs
 
