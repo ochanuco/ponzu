@@ -27,6 +27,7 @@ class FakeOrchestrator:
         self.run_forever_calls = 0
         self.run_forever_error: Exception | None = None
         self.turn_callback = None
+        self.state_callback = None
 
     def text_turn(self, utterance: str, *, speak: bool = False) -> TurnResult:
         self.calls.append((utterance, speak))
@@ -43,6 +44,9 @@ class FakeOrchestrator:
 
     def on_turn(self, callback) -> None:
         self.turn_callback = callback
+
+    def on_state_change(self, callback) -> None:
+        self.state_callback = callback
 
     def run_forever(self) -> None:
         self.run_forever_calls += 1
@@ -440,3 +444,29 @@ def test_start_reports_a_failed_turn_to_the_user(monkeypatch, tmp_path: Path, ca
 
     assert "sounddevice is not installed" in captured.err
     assert "ponzu doctor" in captured.err
+
+
+def test_start_announces_that_it_is_listening(monkeypatch, tmp_path: Path, capsys):
+    """A woken assistant must say so.
+
+    Regression: waking printed nothing but JSON, so a user who said the wake
+    word and then paused saw no sign it had heard them -- indistinguishable
+    from no response at all.
+    """
+    from ponzu.core.state import State
+
+    _isolate_data_dir(monkeypatch, tmp_path)
+    _pretend_tty(monkeypatch)
+    _pretend_deps_ok(monkeypatch)
+    fake = FakeOrchestrator()
+    fake.run_forever_error = KeyboardInterrupt()
+    monkeypatch.setattr(
+        cli.factory, "build_orchestrator", lambda cfg, *, voice, speak=False: fake
+    )
+
+    cli.main(["start"])
+    assert fake.state_callback is not None
+    fake.state_callback(State.IDLE, State.LISTENING)
+    captured = capsys.readouterr()
+
+    assert "listening" in captured.out.lower()

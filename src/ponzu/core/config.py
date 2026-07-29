@@ -86,6 +86,9 @@ class AudioConfig:
     sample_rate: int
     max_utterance_ms: int
     silence_timeout_ms: int
+    # Bounds the wait for speech to begin; `silence_timeout_ms` only applies
+    # once speech has already started (DESIGN section 4.3).
+    speech_start_timeout_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +185,10 @@ _DEFAULTS: dict[str, Any] = {
         "sample_rate": 16000,
         "max_utterance_ms": 10000,
         "silence_timeout_ms": 1200,
+        # How long to wait for speech to *begin* after the wake word. Without
+        # this the capture runs the full max_utterance_ms when the user says
+        # nothing -- ten seconds of dead air that reads as a broken assistant.
+        "speech_start_timeout_ms": 2500,
     },
     "privacy": {
         "persist_audio": False,

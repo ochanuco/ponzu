@@ -18,6 +18,7 @@ from ponzu.core import factory, paths
 from ponzu.core.config import Config, ConfigError, load_config, write_default_config
 from ponzu.core.logging import setup_logging
 from ponzu.core.orchestrator import Orchestrator, TurnResult
+from ponzu.core.state import State
 
 __all__ = ["main"]
 
@@ -265,6 +266,19 @@ def cmd_chat(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+_STATE_CUES: dict[State, str] = {
+    State.LISTENING: "🎤 listening...",
+    State.THINKING: "…thinking",
+}
+
+
+def _announce_state(_previous: State, new: State) -> None:
+    """Print a one-line cue for the states the user is waiting through."""
+    cue = _STATE_CUES.get(new)
+    if cue is not None:
+        print(cue, flush=True)
+
+
 def _report_turn(result: TurnResult) -> None:
     """Print one turn's outcome for the person sitting at the terminal."""
     if result.ok:
@@ -337,6 +351,11 @@ def cmd_start(args: argparse.Namespace) -> int:
     # possible. Without this the terminal shows only a JSON `turn_failed`
     # event naming the exception type, which does not tell the user what to fix.
     orchestrator.on_turn(_report_turn)
+    # Without a cue the terminal shows only JSON while the assistant waits for
+    # an utterance, so a user who woke it and then paused had no way to tell it
+    # was listening -- it read as no response at all (DESIGN section 8 asks for
+    # a message on failure; this is the same problem before the failure).
+    orchestrator.on_state_change(_announce_state)
 
     try:
         orchestrator.run_forever()

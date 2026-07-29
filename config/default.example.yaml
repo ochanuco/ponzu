@@ -91,6 +91,10 @@ audio:
   max_utterance_ms: 10000
   # How much trailing silence ends an utterance.
   silence_timeout_ms: 1200
+  # How long to wait for speech to *begin* after waking. silence_timeout_ms
+  # only applies once speech has started, so without this the capture waits the
+  # full max_utterance_ms when you say nothing.
+  speech_start_timeout_ms: 2500
 
 privacy:
   persist_audio: false

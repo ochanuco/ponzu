@@ -92,6 +92,7 @@ class MicrophoneInput:
             dtype="int16",
             device=self._config.input_device,
         ) as stream:
+            start_timeout_ms = self._config.speech_start_timeout_ms
             while elapsed_ms < max_duration_ms:
                 data, _overflowed = stream.read(chunk_frames)
                 pcm_chunk = bytes(data)
@@ -105,6 +106,14 @@ class MicrophoneInput:
                     silence_ms += _CHUNK_MS
                     if silence_ms >= silence_timeout_ms:
                         break
+                elif elapsed_ms >= start_timeout_ms:
+                    # DESIGN section 4.3: `silence_timeout_ms` only applies
+                    # once speech has started, so without this branch a user
+                    # who says nothing after the wake word waits the full
+                    # `max_utterance_ms`. Ten seconds of dead air reads as a
+                    # broken assistant, which is what it looked like in
+                    # practice.
+                    break
 
         if not speech_started:
             return AudioBuffer(

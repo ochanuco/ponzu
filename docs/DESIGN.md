@@ -166,7 +166,13 @@ the callback, because `voice_turn` opens its own capture stream.
 - Buffer audio after wake detection
 - Detect end of speech
 - Apply maximum utterance timeout
+- Give up early when speech never starts
 - Normalize audio format for STT
+
+`silence_timeout_ms` only applies once speech has been detected, so an
+utterance that never begins would otherwise run the full `max_utterance_ms`.
+Ten seconds of nothing reads as a broken assistant, so `speech_start_timeout_ms`
+bounds the wait for speech to begin.
 
 ### Recommended Runtime Format
 
