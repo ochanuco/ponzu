@@ -378,3 +378,55 @@ interface is also a poor channel for diagnosing its own failures.
   asks for a message on failure, and the structured log deliberately records
   only an error *category* (section 7), which is not enough for a user to know
   what to fix.
+
+---
+
+## ADR-012: `qwen3:30b` as the Default Local LLM
+
+- **Status:** Accepted
+- **Decision:** The default local model stays **`qwen3:30b`**. Conversational
+  latency is addressed by streaming the response, not by choosing a smaller
+  model.
+
+### Context
+
+DESIGN section 11 left the default local LLM open. Measured end to end on an
+M1 Max / 64 GB, the LLM is the largest stage of a turn at 4.0-4.8 s, out of
+4.9-6.4 s from the user finishing speaking to the reply beginning.
+
+The obvious reading — "the model is too big, use a smaller one" — does not
+survive looking at what the model actually is:
+
+```text
+family            : qwen3moe
+parameter_size    : 30.5B
+expert_count      : 128
+expert_used_count : 8
+```
+
+`qwen3:30b` is Qwen3-30B-A3B: a mixture-of-experts model with roughly 3B
+active parameters per token. It already delivers 30B-class quality at
+3B-class speed, so it sits on the efficiency frontier rather than above it.
+A dense model of comparable quality would be several times slower, and a
+smaller dense model would give up quality without a matching speed win
+against 3B active.
+
+An assistant that answers quickly but poorly is not a usable assistant. The
+conversational requirement in section 2 is about how long the user waits
+before hearing *something*, which is not the same as how long generation takes.
+
+### Consequences
+
+- `llm.model` stays `qwen3:30b`; `llm.timeout_s` stays sized for the ~27 s
+  cold load rather than the ~4-5 s steady state.
+- Perceived latency is a **streaming** problem (ROADMAP Phase 2: streaming LLM
+  output, sentence-level TTS). Emitting the first sentence to VOICEVOX while
+  the rest is still generating should cut time-to-first-audio to 1-2 s without
+  touching model choice.
+- Reasoning stays enabled. ADR-009's note holds: Ollama's `think: false` makes
+  this model leak its reasoning into `message.content`.
+- The persona's response-length constraint (DESIGN section 4.6) is
+  load-bearing for latency, not only for tone. Without it the same model
+  produced ~6,800 characters of reasoning and took ~35 s. Loosening it has a
+  measurable latency cost.
+- Machines much smaller than 64 GB are out of scope for this default.

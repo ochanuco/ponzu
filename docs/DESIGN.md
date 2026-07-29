@@ -499,16 +499,37 @@ Write and high-impact operations should require explicit confirmation.
 | Menu bar UI versus CLI-only MVP | CLI-only for the MVP | ADR-011 |
 | Wake-word engine | Substitute engine initially, behind a stable interface | ADR-010 |
 | STT backend | `faster-whisper`, default model size `small` | ADR-009 |
+| Default local LLM | `qwen3:30b` (Qwen3-30B-A3B); latency handled by streaming | ADR-012 |
 
 ### Still Open
 
-- Default local LLM (example configuration uses `qwen3:30b`)
+- VOICEVOX speaker
+- Packaging and process supervision
+- Short-term context retention policy
+- License
 
-  Measured end to end on an M1 Max / 64 GB over three consecutive `ponzu
-  start` turns, warm model:
+### Measured Latency
 
-  | Turn | Utterance | STT | LLM | TTS | Stop speaking → reply starts |
-  | --- | --- | --- | --- | --- | --- |
+End to end on an M1 Max / 64 GB over three consecutive `ponzu start` turns,
+warm model, `qwen3:30b` + `faster-whisper` `small` + VOICEVOX:
+
+| Turn | Utterance | STT | LLM | TTS | Stop speaking → reply starts |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 3.6 s | 1531 ms | 4833 ms | 1384 ms | 6.4 s |
+| 2 | 4.2 s | 874 ms | 4064 ms | 1030 ms | 4.9 s |
+| 3 | 6.2 s | 1016 ms | 4114 ms | 1096 ms | 5.1 s |
+
+Cold-loading the 18 GB model costs ~27 s once, before the first turn.
+
+An earlier revision recorded ~35 s per warm turn and concluded the model could
+not meet the "low enough latency for conversational use" requirement in
+section 2. That measurement used a bare `curl` with no system prompt, where the
+model produced ~6,800 characters of reasoning before answering. Through the
+real pipeline the persona's response-length constraint (section 4.6) keeps
+reasoning short. The earlier conclusion was wrong; see ADR-012 for the decision
+this evidence supports.
+
+--- | --- | --- | --- | --- | --- |
   | 1 | 3.6 s | 1531 ms | 4833 ms | 1384 ms | 6.4 s |
   | 2 | 4.2 s | 874 ms | 4064 ms | 1030 ms | 4.9 s |
   | 3 | 6.2 s | 1016 ms | 4114 ms | 1096 ms | 5.1 s |
