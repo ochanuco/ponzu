@@ -315,8 +315,8 @@ Barge-in should stop playback and transition to listening.
 wake_word:
   provider: "whisper"
   phrase: "ぽんず"
-  sensitivity: 0.6
-  model: "tiny"
+  sensitivity: 0.3 # a floor, not a probability -- see ADR-013
+  model: "base"
 
 stt:
   provider: "faster_whisper"

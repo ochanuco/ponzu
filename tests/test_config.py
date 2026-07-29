@@ -186,3 +186,25 @@ def test_write_default_config_copies_example(tmp_path: Path) -> None:
     assert dest.is_file()
     config = load_config(dest)
     assert config.tts.provider == "voicevox"
+
+
+def test_blank_wake_word_variant_is_rejected(tmp_path: Path) -> None:
+    """A blank variant would match every transcript.
+
+    `WhisperWakeWord._matches` tests each variant as a substring, and every
+    string contains "" -- so one stray empty entry turns the wake word into
+    "any speech at all".
+    """
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text('wake_word:\n  variants: ["ぽんず", ""]\n')
+
+    with pytest.raises(ConfigError, match="blank"):
+        load_config(config_file)
+
+
+def test_whitespace_only_wake_word_variant_is_rejected(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text('wake_word:\n  variants: ["ぽんず", "   "]\n')
+
+    with pytest.raises(ConfigError, match="blank"):
+        load_config(config_file)

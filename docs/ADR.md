@@ -482,8 +482,9 @@ confidence accepted for a match. ADR-010 reserved the field for exactly this.
 
 - No new dependency and no credential. The `stt` extra, already required for
   the voice loop, is the only thing needed.
-- The gate uses its own `wake_word.model`, defaulting to `tiny`, kept separate
+- The gate uses its own `wake_word.model`, defaulting to `base`, kept separate
   from `stt.model` so the gate stays cheap while transcription stays accurate.
+  The measurements below are why it is `base` and not `tiny`.
 - Matching normalises the transcript (NFKC, drop punctuation, fold katakana to
   hiragana) and then accepts an **edit distance of 1** against the phrase, not
   an exact match. Measurements below show why exact matching does not work.

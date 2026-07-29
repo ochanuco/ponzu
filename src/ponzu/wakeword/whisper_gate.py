@@ -217,6 +217,24 @@ class WhisperWakeWord:
         return sd
 
     def _run(self) -> None:
+        try:
+            self._capture_loop()
+        except Exception as exc:  # noqa: BLE001 - last line of defence for the thread
+            # The thread is about to die either way. `is_running` going False
+            # already satisfies ADR-010's liveness contract, so the loop in
+            # `run_forever` will notice and exit -- but without this the only
+            # trace is Python's default traceback on stderr, and the reason
+            # (a disconnected device, say) is lost from the structured log.
+            # Type only, never the message: DESIGN section 7.
+            #
+            # Logged and swallowed rather than re-raised. Re-raising in a daemon
+            # thread only prints a traceback the user cannot act on; the thread
+            # dies either way, `is_running` goes False, and `run_forever` exits
+            # and reports through the CLI. The structured event is what carries
+            # the reason.
+            log_event(self._logger, "wake_gate_failed", reason=type(exc).__name__)
+
+    def _capture_loop(self) -> None:
         sd = self._import_sounddevice()
         chunk_frames = max(1, int(self._audio.sample_rate * _CHUNK_MS / 1000))
 

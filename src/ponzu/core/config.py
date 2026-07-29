@@ -300,6 +300,12 @@ def _deep_merge(
                     f"expected a list of strings for {dotted!r}, "
                     f"got {type(value).__name__}"
                 )
+            elif any(not item.strip() for item in value):
+                # `WhisperWakeWord._matches` tests each variant as a substring,
+                # and every string contains "". A blank entry would therefore
+                # wake the assistant on any non-empty transcript at all, which
+                # is worse than the typo that produced it.
+                type_errors.append(f"{dotted!r} must not contain a blank entry")
             else:
                 merged[key] = value
         else:

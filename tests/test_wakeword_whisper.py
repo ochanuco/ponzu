@@ -19,6 +19,7 @@ import importlib
 import struct
 import sys
 import threading
+import time
 import types
 
 import pytest
@@ -211,17 +212,40 @@ def test_probe_fails_without_faster_whisper(hide_module, monkeypatch) -> None:
     assert result.component == "wake_word.whisper_gate"
 
 
-def test_run_raises_adapter_unavailable_without_sounddevice(hide_module) -> None:
+def test_capture_loop_raises_adapter_unavailable_without_sounddevice(
+    hide_module,
+) -> None:
     hide_module("sounddevice")
     from ponzu.wakeword.whisper_gate import WhisperWakeWord
 
     detector = WhisperWakeWord(_wake_config(), _audio_config())
 
-    # `_run` is the capture-thread entry point `start()` spawns; calling it
-    # directly (synchronously) proves the failure is `AdapterUnavailable`,
-    # not a bare `ImportError`, on the exact path `start()` would hit.
+    # `_capture_loop` is the work `_run` wraps. Asserting here rather than on
+    # `_run` because `_run` is a thread entry point: it logs and swallows, so
+    # nothing it raises could ever reach a caller anyway.
     with pytest.raises(AdapterUnavailable):
+        detector._capture_loop()
+
+
+def test_missing_extra_stops_the_thread_and_is_logged(hide_module, caplog) -> None:
+    import logging
+
+    hide_module("sounddevice")
+    from ponzu.wakeword.whisper_gate import WhisperWakeWord
+
+    detector = WhisperWakeWord(_wake_config(), _audio_config())
+    with caplog.at_level(logging.INFO):
         detector._run()
+
+    # ADR-010 liveness plus a reason: `run_forever` sees the detector stop, and
+    # the log says why instead of leaving only a stderr traceback.
+    assert not detector.is_running
+    reasons = [
+        r.__dict__["ponzu_fields"].get("reason")
+        for r in caplog.records
+        if r.__dict__.get("ponzu_event") == "wake_gate_failed"
+    ]
+    assert reasons == ["AdapterUnavailable"]
 
 
 # ---------------------------------------------------------------------------
@@ -516,3 +540,36 @@ def test_wake_gate_event_names_audio_and_transcribe_times_apart(monkeypatch, cap
     assert set(fields) == {"transcribe_ms", "audio_ms", "chars", "matched"}
     # And still no transcript text anywhere in the record (DESIGN section 7).
     assert "ぽんず" not in caplog.text
+
+
+def test_capture_thread_failure_is_logged_before_the_thread_dies(monkeypatch, caplog):
+    """An unexpected failure must leave a structured trace, not just a traceback.
+
+    `is_running` going False already tells `run_forever` to stop (ADR-010), but
+    without this the reason -- a disconnected device, say -- exists only as
+    Python's default stderr traceback.
+    """
+    import logging
+
+    from ponzu.wakeword import whisper_gate
+
+    class Exploding:
+        def __getattr__(self, name):
+            raise RuntimeError("device went away")
+
+    monkeypatch.setitem(sys.modules, "sounddevice", Exploding())
+
+    detector = whisper_gate.WhisperWakeWord(_wake_config(), _audio_config())
+    with caplog.at_level(logging.INFO):
+        detector.start()
+        for _ in range(int(_WAIT_S * 100)):
+            if not detector.is_running:
+                break
+            time.sleep(0.01)
+        detector.stop()
+
+    assert not detector.is_running
+    events = [r.__dict__.get("ponzu_event") for r in caplog.records]
+    assert "wake_gate_failed" in events
+    # Type only, never the message (DESIGN section 7).
+    assert "device went away" not in caplog.text
