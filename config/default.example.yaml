@@ -94,7 +94,10 @@ audio:
   # How long to wait for speech to *begin* after waking. silence_timeout_ms
   # only applies once speech has started, so without this the capture waits the
   # full max_utterance_ms when you say nothing.
-  speech_start_timeout_ms: 2500
+  #
+  # Lower it and you start racing the user: they have to notice the assistant
+  # woke before they begin talking, and 2.5s expired mid-reaction in practice.
+  speech_start_timeout_ms: 5000
 
 privacy:
   persist_audio: false

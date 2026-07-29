@@ -188,7 +188,12 @@ _DEFAULTS: dict[str, Any] = {
         # How long to wait for speech to *begin* after the wake word. Without
         # this the capture runs the full max_utterance_ms when the user says
         # nothing -- ten seconds of dead air that reads as a broken assistant.
-        "speech_start_timeout_ms": 2500,
+        #
+        # 5s, not the 2.5s tried first: the user has to notice the assistant
+        # woke before they start talking, and 2.5s expired while they were
+        # still reacting to the cue. This bounds dead air without racing the
+        # person it is waiting for.
+        "speech_start_timeout_ms": 5000,
     },
     "privacy": {
         "persist_audio": False,
