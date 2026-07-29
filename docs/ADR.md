@@ -282,6 +282,16 @@ environment creation without a separate tool for packaging.
 - Python 3.11+ is required.
 - Linux and Windows are explicitly out of scope for the MVP; nothing should
   hard-code Apple-only behavior beyond the data directory resolution.
+- The STT backend is **`faster-whisper`**, resolving that entry in section 11.
+  DESIGN section 4.4 listed `whisper.cpp` and `faster-whisper` as candidates,
+  and the original example config named a `whisper_cpp` provider with a
+  `models/ggml-small.bin` path. Those values are incompatible with the backend
+  that was actually implemented: `faster-whisper` takes either a size name
+  (`small`) or a directory holding a CTranslate2 model, and interprets anything
+  else as a Hugging Face repository id. Left unchanged, the first voice turn
+  failed with `RepositoryNotFoundError`. The config now names the Python
+  backend (`faster_whisper`) and a size (`small`), and `whisper_cpp` is not
+  accepted — nothing implements it.
 
 ---
 

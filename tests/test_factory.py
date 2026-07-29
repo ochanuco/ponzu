@@ -39,9 +39,8 @@ def test_build_tts_returns_voicevox_for_default_config(default_config) -> None:
 def test_build_stt_returns_whisper_recognizer_for_default_config(
     default_config,
 ) -> None:
-    # DESIGN 5.1 / config default: stt.provider == "whisper_cpp" names the
-    # model *format*, not the Python package -- it must still resolve to
-    # WhisperRecognizer (faster-whisper).
+    # ADR-009: stt.provider names the Python backend, and faster-whisper is
+    # the one that exists.
     stt = factory.build_stt(default_config)
     assert isinstance(stt, WhisperRecognizer)
 
@@ -94,7 +93,7 @@ def test_build_stt_unknown_provider_names_bad_value_and_options(default_config) 
 
     with pytest.raises(ConfigError, match="nope") as excinfo:
         factory.build_stt(cfg)
-    assert "whisper_cpp" in str(excinfo.value)
+    assert "faster_whisper" in str(excinfo.value)
 
 
 def test_build_wake_word_unknown_provider_names_bad_value_and_options(

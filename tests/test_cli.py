@@ -101,10 +101,12 @@ def test_doctor_with_default_config_reports_fail_rows_and_never_raises(
     exit_code = cli.main(["doctor"])
     captured = capsys.readouterr()
 
-    # No user config file, no live Ollama/VOICEVOX, and the audio/stt extras
-    # absent (ADR-009) -- at least one row must fail, and a remedy must be
-    # printed for it, all without raising.
-    assert exit_code == 1
+    # Deliberately environment-independent. Whether Ollama is running or the
+    # extras are installed varies per machine, and an earlier version asserted
+    # `exit_code == 1`, which broke the moment the dependencies were actually
+    # set up. What must hold everywhere: doctor probes every component, prints
+    # a row for each, and never raises.
+    assert exit_code in (0, 1)
     assert "REMEDY" in captured.out
     for component in (
         "config",
@@ -116,6 +118,26 @@ def test_doctor_with_default_config_reports_fail_rows_and_never_raises(
         "wake-word",
     ):
         assert component in captured.out
+
+
+def test_doctor_exit_code_is_driven_by_fail_rows(monkeypatch, tmp_path: Path) -> None:
+    _isolate_data_dir(monkeypatch, tmp_path)
+
+    # The exit-code rule itself is tested with fixed rows so it holds no matter
+    # what is installed: warn does not fail the command, fail does.
+    monkeypatch.setattr(
+        cli,
+        "_probe_adapters",
+        lambda cfg: [cli.ProbeResult(component="llm", status="warn", detail="x")],
+    )
+    assert cli.main(["doctor"]) == 0
+
+    monkeypatch.setattr(
+        cli,
+        "_probe_adapters",
+        lambda cfg: [cli.ProbeResult(component="llm", status="fail", detail="x")],
+    )
+    assert cli.main(["doctor"]) == 1
 
 
 def test_doctor_write_config_writes_then_does_not_overwrite(

@@ -296,8 +296,8 @@ wake_word:
   sensitivity: 0.6
 
 stt:
-  provider: "whisper_cpp"
-  model: "models/ggml-small.bin"
+  provider: "faster_whisper"
+  model: "small"
 
 llm:
   provider: "ollama"
@@ -498,10 +498,10 @@ Write and high-impact operations should require explicit confirmation.
 | Target platform | macOS on Apple Silicon | ADR-009 |
 | Menu bar UI versus CLI-only MVP | CLI-only for the MVP | ADR-011 |
 | Wake-word engine | Substitute engine initially, behind a stable interface | ADR-010 |
+| STT backend | `faster-whisper`, default model size `small` | ADR-009 |
 
 ### Still Open
 
-- STT backend and model size (default candidate: `faster-whisper`, `small`)
 - Default local LLM (example configuration uses `qwen3:30b`)
 
   Measured on an M1 Max / 64 GB, `qwen3:30b` via Ollama:

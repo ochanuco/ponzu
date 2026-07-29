@@ -48,14 +48,11 @@ _LLM_PROVIDERS: dict[str, type] = {"ollama": OllamaLanguageModel}
 
 _TTS_PROVIDERS: dict[str, type] = {"voicevox": VoicevoxSpeechSynthesizer}
 
-# The config default names the on-disk model *format* ("whisper_cpp"), not
-# the Python package backing it -- `WhisperRecognizer` is actually a
-# faster-whisper adapter (DESIGN section 4.4 lists `whisper.cpp` and
-# `faster-whisper` as candidate backends; faster-whisper is what got
-# implemented). Renaming the config default to match is a spec-level change
-# (DESIGN section 5.1) and out of scope here; this dict just maps the
-# existing string to the class that currently implements it.
-_STT_PROVIDERS: dict[str, type] = {"whisper_cpp": WhisperRecognizer}
+# ADR-009 resolves the STT backend to faster-whisper. "whisper_cpp" is
+# deliberately absent: nothing implements it, and accepting it would mean
+# accepting a `models/ggml-*.bin` path that faster-whisper resolves as a
+# Hugging Face repository id, failing only on the first voice turn.
+_STT_PROVIDERS: dict[str, type] = {"faster_whisper": WhisperRecognizer}
 
 
 def _dispatch(providers: dict[str, type], provider: str, kind: str) -> type:

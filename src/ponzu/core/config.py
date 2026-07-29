@@ -104,8 +104,11 @@ class Config:
 _DEFAULTS: dict[str, Any] = {
     "wake_word": {"phrase": "ぽんず", "sensitivity": 0.6, "provider": "keyboard"},
     "stt": {
-        "provider": "whisper_cpp",
-        "model": "models/ggml-small.bin",
+        # ADR-009: the backend is faster-whisper. `model` is either a size name
+        # it downloads and caches, or a directory holding a CTranslate2 model --
+        # anything else is resolved as a Hugging Face repository id.
+        "provider": "faster_whisper",
+        "model": "small",
         "language": "ja",
     },
     "llm": {

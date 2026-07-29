@@ -21,6 +21,31 @@ from ponzu.core.logging import chars, log_event
 
 _REMEDY = "install with: uv sync --extra stt"
 
+# Size names faster-whisper downloads and caches itself. Anything not in this
+# set and not an existing path is treated by faster-whisper as a Hugging Face
+# repository id, so `probe` can tell a plausible config from a broken one
+# without touching the network (ADR-009).
+_MODEL_SIZES: frozenset[str] = frozenset(
+    {
+        "tiny",
+        "tiny.en",
+        "base",
+        "base.en",
+        "small",
+        "small.en",
+        "medium",
+        "medium.en",
+        "large-v1",
+        "large-v2",
+        "large-v3",
+        "large",
+        "distil-small.en",
+        "distil-medium.en",
+        "distil-large-v2",
+        "distil-large-v3",
+    }
+)
+
 # int16 full-scale magnitude, used to normalize PCM samples into the
 # float32 [-1.0, 1.0] range faster-whisper expects.
 _INT16_FULL_SCALE = 32768.0
@@ -148,9 +173,25 @@ class WhisperRecognizer:
                 status="ok",
                 detail=f"local model at {model_ref}",
             )
+        if model_ref in _MODEL_SIZES:
+            return ProbeResult(
+                component="stt.whisper",
+                status="warn",
+                detail=f"model size {model_ref!r} will be downloaded on first use",
+                remedy="pre-download it to avoid a slow first turn",
+            )
+        # Not a size name and not a path that exists. faster-whisper resolves
+        # anything else as a Hugging Face repository id, which fails at the
+        # first transcription rather than here -- so this is a fail, not a
+        # warn. A `models/ggml-*.bin` path from whisper.cpp lands here
+        # (ADR-009).
         return ProbeResult(
             component="stt.whisper",
-            status="warn",
-            detail=f"model {model_ref!r} not found locally; will be downloaded on first use",
-            remedy="pre-download the model, or set stt.model to an existing local path",
+            status="fail",
+            detail=(
+                f"model {model_ref!r} is neither a known size name nor an "
+                "existing path; faster-whisper would resolve it as a Hugging "
+                "Face repository id"
+            ),
+            remedy=f"set stt.model to one of: {', '.join(sorted(_MODEL_SIZES))}",
         )

@@ -20,8 +20,14 @@ wake_word:
   provider: "keyboard"
 
 stt:
-  provider: "whisper_cpp"
-  model: "models/ggml-small.bin"
+  # ADR-009 resolves the backend to faster-whisper. `whisper_cpp` is not a
+  # valid value -- nothing implements it.
+  provider: "faster_whisper"
+  # Either a size name faster-whisper downloads and caches ("tiny", "base",
+  # "small", "medium", "large-v3"), or a directory holding a CTranslate2
+  # model. Anything else is resolved as a Hugging Face repository id, so a
+  # `models/ggml-*.bin` path from whisper.cpp will NOT work here.
+  model: "small"
   # BCP-47-ish hint passed to the STT backend; "ja" matches the "ぽんず" wake
   # phrase and the assistant's primary language (DESIGN section 1).
   language: "ja"

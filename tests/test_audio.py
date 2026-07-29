@@ -30,9 +30,10 @@ from ponzu.core.config import AudioConfig
 
 
 def _fake_input_sounddevice(read_chunks):
-    """Fake `sounddevice` exposing just the blocking-mode `InputStream` API
-    `ponzu.audio.capture` uses. `read_chunks(frames)` is called once per
-    `stream.read()`; every call is recorded on `module.calls`.
+    """Fake `sounddevice` exposing the blocking-mode `RawInputStream` API
+    `ponzu.audio.capture` uses -- the raw variant, whose `read()` returns a PCM
+    byte buffer rather than a numpy array. `read_chunks(frames)` is called once
+    per `stream.read()`; every call is recorded on `module.calls`.
     """
     calls: list[int] = []
     module = types.ModuleType("sounddevice")
@@ -54,7 +55,7 @@ def _fake_input_sounddevice(read_chunks):
             calls.append(frames)
             return read_chunks(frames), False
 
-    module.InputStream = InputStream
+    module.RawInputStream = InputStream
     module.calls = calls
     return module
 
@@ -70,7 +71,7 @@ def _silent_pcm(frames: int) -> bytes:
 def _fake_output_sounddevice(
     write_log, *, started: threading.Event | None = None, delay_s: float = 0.0
 ):
-    """Fake `sounddevice` exposing the blocking-mode `OutputStream` API
+    """Fake `sounddevice` exposing the blocking-mode `RawOutputStream` API
     `ponzu.audio.playback` uses. Every `stream.write()` call appends the
     chunk to `write_log`; `started` (if given) is set after the first write
     so a test can synchronize a cancelling thread with playback actually
@@ -91,13 +92,22 @@ def _fake_output_sounddevice(
             return False
 
         def write(self, chunk):
+            # The adapter uses RawOutputStream, whose write() takes a PCM byte
+            # buffer. Rejecting anything else keeps the fake honest: an earlier
+            # version accepted whatever it was given, so playback shipped
+            # broken against the real `OutputStream` while the suite was green.
+            if not isinstance(chunk, bytes | bytearray | memoryview):
+                raise TypeError(
+                    f"RawOutputStream.write expects a byte buffer, "
+                    f"got {type(chunk).__name__}"
+                )
             write_log.append(chunk)
             if started is not None:
                 started.set()
             if delay_s:
                 time.sleep(delay_s)
 
-    module.OutputStream = OutputStream
+    module.RawOutputStream = OutputStream
     return module
 
 
