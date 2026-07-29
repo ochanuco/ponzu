@@ -340,6 +340,23 @@ is no longer running.
 - `run_forever` exits when the detector stops on its own, instead of spinning.
 - `ponzu start` refuses to start the keyboard substitute on a non-interactive
   stdin, rather than appearing to run while being unable to ever respond.
+- **`stop()` must not return while the detector thread is still inside its
+  audio backend.** Python runs `atexit` handlers while daemon threads are
+  still executing, and `sounddevice` terminates PortAudio from one. A detector
+  thread still tearing its stream down then deadlocks against that teardown on
+  a CoreAudio HAL mutex, and the process hangs on exit with both threads in
+  `__psynch_mutexwait`. Observed and captured with `sample(1)`:
+
+  ```text
+  main    Py_Exit -> atexit -> Pa_Terminate -> AudioOutputUnitStop
+                  -> std::recursive_mutex::lock()   [blocked]
+  gate    FinishStoppingStream -> AudioDeviceStop_mac_imp
+                  -> HALB_Mutex::Lock()             [blocked]
+  ```
+
+  The join in `stop()` therefore has to be long enough to cover a slow
+  CoreAudio close, not merely long enough for the loop to notice the stop
+  flag.
 - The MVP ships a keyboard-triggered detector as the default so `ponzu start`
   is runnable, and an always-on detector for testing.
 - A real acoustic engine is a drop-in replacement selected by configuration —

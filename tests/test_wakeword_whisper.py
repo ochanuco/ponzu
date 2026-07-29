@@ -672,3 +672,52 @@ def test_stop_works_even_when_the_device_stalls(monkeypatch) -> None:
 
     assert not detector.is_running
     assert elapsed < 1.0, "stop() did not return promptly"
+
+
+def test_stop_waits_for_a_slow_stream_close(monkeypatch) -> None:
+    """`stop()` must not return while the thread is still inside the backend.
+
+    ADR-010: Python runs atexit handlers while daemon threads are still alive,
+    and sounddevice terminates PortAudio from one. Returning early here let the
+    interpreter reach `Pa_Terminate` while the detector was still closing its
+    stream, and the two deadlocked on a CoreAudio mutex -- the process hung on
+    exit until it was killed.
+    """
+    closed = threading.Event()
+    module = types.ModuleType("sounddevice")
+
+    class RawInputStream:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            # Stands in for a slow CoreAudio teardown.
+            time.sleep(0.4)
+            closed.set()
+            return False
+
+        @property
+        def read_available(self):
+            return 0
+
+        def read(self, frames):  # pragma: no cover
+            raise AssertionError("read() called while nothing was available")
+
+    module.RawInputStream = RawInputStream
+    monkeypatch.setitem(sys.modules, "sounddevice", module)
+
+    from ponzu.wakeword import whisper_gate
+
+    detector = whisper_gate.WhisperWakeWord(_wake_config(), _audio_config())
+    detector.on_detected(lambda confidence: None)
+    detector.start()
+    time.sleep(0.05)
+
+    detector.stop()
+
+    # The close must have completed before stop() handed control back.
+    assert closed.is_set()
+    assert not detector.is_running

@@ -47,7 +47,11 @@ _SILENCE_RMS_THRESHOLD = 400.0
 # How long `stop()` waits for the capture thread to notice the stop event
 # and exit before giving up -- kept small and constant so `stop()` can never
 # hang a caller, matching `KeyboardWakeWord`.
-_JOIN_TIMEOUT_S = 1.0
+# Long enough to cover a slow CoreAudio stream close, not merely long enough
+# for the loop to notice `_stop_event` (ADR-010). Returning while the thread is
+# still inside PortAudio lets the interpreter reach `Pa_Terminate` from atexit
+# and deadlock against it -- daemon threads keep running until then.
+_JOIN_TIMEOUT_S = 10.0
 
 # Japanese and ASCII punctuation stripped before comparing a transcript to a
 # configured variant -- a real transcription of a two-syllable phrase is
@@ -194,6 +198,12 @@ class WhisperWakeWord:
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=_JOIN_TIMEOUT_S)
+            if self._thread.is_alive():
+                # Exiting now risks the ADR-010 deadlock. Nothing here can
+                # force the thread to finish, but this is the one moment where
+                # saying so costs nothing and diagnosing it later costs a
+                # native stack dump.
+                log_event(self._logger, "wake_gate_join_timeout")
 
     @property
     def is_running(self) -> bool:
