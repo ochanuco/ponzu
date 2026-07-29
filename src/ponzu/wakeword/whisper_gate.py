@@ -253,6 +253,11 @@ class WhisperWakeWord:
             dtype="int16",
             device=self._audio.input_device,
         ) as stream:
+            # Wall clock alongside the audio clock, for the same reason as
+            # `ponzu.audio.capture`: summing `_CHUNK_MS` assumes every read
+            # returns on time, and a device delivering slower than real time
+            # makes the window run far past `max_window_ms`.
+            started_at = time.monotonic()
             while not self._stop_event.is_set():
                 data, _overflowed = stream.read(chunk_frames)
                 pcm_chunk = bytes(data)
@@ -273,6 +278,8 @@ class WhisperWakeWord:
                 if speech_started and silence_ms >= self._config.silence_timeout_ms:
                     break
                 if window_ms >= self._config.max_window_ms:
+                    break
+                if (time.monotonic() - started_at) * 1000 >= self._config.max_window_ms:
                     break
         # Stream is closed at this point (the `with` block has exited) --
         # transcription below never runs while the mic is still open.
