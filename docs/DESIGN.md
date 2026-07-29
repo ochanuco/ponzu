@@ -343,28 +343,36 @@ Potential future storage:
 ```text
 ponzu/
 ├── README.md
-├── ADR.md
-├── ROADMAP.md
-├── DESIGN.md
-├── SECURITY.md
+├── pyproject.toml
+├── uv.lock
 ├── .gitignore
 ├── .env.example
 ├── config/
 │   └── default.example.yaml
 ├── docs/
+│   ├── ADR.md
+│   ├── DESIGN.md
+│   ├── ROADMAP.md
+│   └── SECURITY.md
 ├── src/
-│   ├── core/
-│   ├── audio/
-│   ├── wakeword/
-│   ├── stt/
-│   ├── llm/
-│   ├── tts/
-│   └── skills/
+│   └── ponzu/
+│       ├── cli.py
+│       ├── core/          # config, paths, logging, state machine, orchestrator
+│       ├── adapters/      # protocol definitions + registry
+│       ├── audio/
+│       ├── wakeword/
+│       ├── stt/
+│       ├── llm/
+│       ├── tts/
+│       └── skills/
 ├── tests/
 └── scripts/
 ```
 
-The implementation language has not yet been fixed and should be selected based on audio ecosystem maturity, Apple Silicon support, packaging, and maintainability.
+The implementation language is **Python managed by `uv`** (see ADR-009). Design
+documents live under `docs/`; only `README.md` remains at the repository root.
+The `src/ponzu/` package layout keeps the installable module namespace explicit
+and matches `uv`'s default src-layout support.
 
 ---
 
@@ -482,14 +490,36 @@ Write and high-impact operations should require explicit confirmation.
 
 ## 11. Open Decisions
 
-The following decisions remain intentionally unresolved:
+### Resolved
 
-- Primary implementation language
-- Wake-word engine
-- STT backend and model size
-- Default local LLM
+| Decision | Outcome | Reference |
+| --- | --- | --- |
+| Primary implementation language | Python + `uv` | ADR-009 |
+| Target platform | macOS on Apple Silicon | ADR-009 |
+| Menu bar UI versus CLI-only MVP | CLI-only for the MVP | ADR-011 |
+| Wake-word engine | Substitute engine initially, behind a stable interface | ADR-010 |
+
+### Still Open
+
+- STT backend and model size (default candidate: `faster-whisper`, `small`)
+- Default local LLM (example configuration uses `qwen3:30b`)
 - VOICEVOX speaker
 - Packaging and process supervision
-- Menu bar UI versus CLI-only MVP
 - Short-term context retention policy
 - License
+
+---
+
+## 12. MVP Command Surface
+
+The first milestone delivers exactly three commands (ADR-011).
+
+| Command | Purpose |
+| --- | --- |
+| `ponzu doctor` | Verify configuration and probe every dependency, reporting per-component status without starting the loop. |
+| `ponzu chat` | Text-in/text-out conversation against the LLM adapter. Exercises orchestration without audio hardware. |
+| `ponzu start` | The full voice loop described in section 3. |
+
+`ponzu chat` exists so the orchestration, prompt, and LLM layers can be
+developed and tested on machines without a microphone, VOICEVOX, or an STT
+model present.

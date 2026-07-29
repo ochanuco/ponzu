@@ -227,3 +227,82 @@ IDLE
 - Cancellation and timeout behavior can be implemented consistently.
 - UI or status indicators can be added later.
 - Failures can return safely to `IDLE`.
+
+---
+
+## ADR-009: Python with `uv`, Targeting Apple Silicon
+
+- **Status:** Accepted
+- **Decision:** The implementation language is **Python**, with dependencies and
+  the virtual environment managed by **`uv`**. The supported target is
+  **macOS on Apple Silicon**.
+
+### Context
+
+DESIGN section 11 previously left the language open, to be chosen on audio
+ecosystem maturity, Apple Silicon support, packaging, and maintainability.
+
+Python has the most direct bindings for the components this project already
+committed to: `faster-whisper` / `whisper.cpp` for STT, `sounddevice`
+(PortAudio) for capture and playback, and plain HTTP for both Ollama and
+VOICEVOX. `uv` provides reproducible resolution, a lockfile, and fast
+environment creation without a separate tool for packaging.
+
+### Consequences
+
+- `pyproject.toml` plus `uv.lock` are the single source of dependency truth.
+- Heavy or hardware-bound dependencies (`sounddevice`, `faster-whisper`,
+  `numpy`) are declared as **optional extras**, so a clone can install, import,
+  and run the test suite on a machine with no audio stack.
+- Python 3.11+ is required.
+- Linux and Windows are explicitly out of scope for the MVP; nothing should
+  hard-code Apple-only behavior beyond the data directory resolution.
+
+---
+
+## ADR-010: Substitute Wake Word Engine for the Initial Implementation
+
+- **Status:** Accepted
+- **Decision:** The first implementation may ship a **substitute** wake-word
+  trigger instead of true acoustic "ぽんず" detection, provided it sits behind
+  the `WakeWordDetector` interface defined in ADR-007.
+
+### Context
+
+Acoustic wake-word detection for a Japanese phrase requires either a custom
+trained model or a licensed engine. Blocking the entire voice loop on that work
+would prevent the rest of the pipeline from being exercised end to end.
+
+### Consequences
+
+- The interface (`start` / `stop` / `on_detected`) is fixed now; the engine
+  behind it is not.
+- The MVP ships a keyboard-triggered detector as the default so `ponzu start`
+  is runnable, and an always-on detector for testing.
+- A real acoustic engine is a drop-in replacement selected by configuration —
+  no orchestrator change may be required to adopt it.
+- DESIGN section 4.2's requirement "Detect ぽんず" is **not** satisfied by the
+  MVP. This is a known, recorded gap rather than an oversight.
+
+---
+
+## ADR-011: Three-Command MVP Surface
+
+- **Status:** Accepted
+- **Decision:** The first milestone is complete when `ponzu doctor`,
+  `ponzu chat`, and `ponzu start` work. The MVP is CLI-only.
+
+### Context
+
+The voice loop depends on four external things — a microphone, an STT model,
+Ollama, and VOICEVOX — any of which may be missing or misconfigured. A voice
+interface is also a poor channel for diagnosing its own failures.
+
+### Consequences
+
+- `ponzu doctor` probes every adapter independently and reports status without
+  starting the loop. It is the supported way to diagnose setup problems.
+- `ponzu chat` exercises orchestration, prompting, and the LLM adapter with no
+  audio hardware, which also makes those layers testable in CI.
+- `ponzu start` is the full loop and is the last of the three to be reachable.
+- The menu bar application from ROADMAP Phase 6 is confirmed out of MVP scope.
