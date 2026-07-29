@@ -12,12 +12,29 @@
 
 wake_word:
   phrase: "ぽんず"
-  sensitivity: 0.6
-  # ADR-010: the MVP ships a keyboard-triggered substitute detector as the
-  # default so `ponzu start` is runnable without a trained acoustic model. A
-  # real acoustic engine is a drop-in replacement selected here -- no
-  # orchestrator change should be required to adopt one.
-  provider: "keyboard"
+  # ADR-013: minimum transcript confidence. This is compared against
+  # exp(mean(avg_logprob)), which measured ~0.42 for every utterance tried,
+  # correct or not -- a floor against garbage, not a real threshold. 0.6
+  # rejected everything, including correct matches. Not a probability.
+  sensitivity: 0.3
+  # ADR-013: acoustic detection of "ぽんず" via an energy gate in front of
+  # faster-whisper. "keyboard" (Enter key) and "manual" remain available.
+  provider: "whisper"
+  # The gate's own model, separate from stt.model so the gate stays cheap.
+  # `base`, not `tiny`: tiny hears the phrase as コンゼ, which is edit distance
+  # 2 from ぽんず and would never fire. base gives コンズ (distance 1).
+  model: "base"
+  # Longest audio window transcribed in one attempt.
+  max_window_ms: 3000
+  # Trailing silence that ends a window early.
+  silence_timeout_ms: 600
+  # Spellings accepted verbatim, on top of the edit-distance match below.
+  variants: ["ぽんず", "ポンズ", "ポン酢", "ぽん酢"]
+  # Maximum edit distance from the normalised phrase. No whisper model
+  # transcribes "ぽんず" correctly, so exact matching never fires. Measured:
+  # 1 -> 5/7 detected with 1/24 false positives; 2 -> 7/7 but 11/24 false
+  # positives (こんにちは, こんばんは, そんな, ...). Do not raise this.
+  max_distance: 1
 
 stt:
   # ADR-009 resolves the backend to faster-whisper. `whisper_cpp` is not a
@@ -74,6 +91,13 @@ audio:
   max_utterance_ms: 10000
   # How much trailing silence ends an utterance.
   silence_timeout_ms: 1200
+  # How long to wait for speech to *begin* after waking. silence_timeout_ms
+  # only applies once speech has started, so without this the capture waits the
+  # full max_utterance_ms when you say nothing.
+  #
+  # Lower it and you start racing the user: they have to notice the assistant
+  # woke before they begin talking, and 2.5s expired mid-reaction in practice.
+  speech_start_timeout_ms: 5000
 
 privacy:
   persist_audio: false

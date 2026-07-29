@@ -27,6 +27,7 @@ class FakeOrchestrator:
         self.run_forever_calls = 0
         self.run_forever_error: Exception | None = None
         self.turn_callback = None
+        self.state_callback = None
 
     def text_turn(self, utterance: str, *, speak: bool = False) -> TurnResult:
         self.calls.append((utterance, speak))
@@ -43,6 +44,9 @@ class FakeOrchestrator:
 
     def on_turn(self, callback) -> None:
         self.turn_callback = callback
+
+    def on_state_change(self, callback) -> None:
+        self.state_callback = callback
 
     def run_forever(self) -> None:
         self.run_forever_calls += 1
@@ -278,6 +282,15 @@ def _pretend_tty(monkeypatch) -> None:
     monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True, raising=False)
 
 
+def _use_keyboard_provider(monkeypatch, tmp_path: Path) -> None:
+    """Write a config selecting the keyboard substitute.
+
+    ADR-013 made the whisper gate the default, so tests about the keyboard
+    provider have to ask for it explicitly rather than relying on the default.
+    """
+    (tmp_path / "kb.yaml").write_text('wake_word:\n  provider: "keyboard"\n')
+
+
 def _pretend_deps_ok(monkeypatch) -> None:
     """`ponzu start` preflights every adapter and refuses to enter a loop that
     can only fail. The optional extras are absent here, so tests exercising the
@@ -285,7 +298,7 @@ def _pretend_deps_ok(monkeypatch) -> None:
     monkeypatch.setattr(cli, "_probe_adapters", lambda cfg: [])
 
 
-def test_start_banner_names_keyboard_provider_and_its_limitation(
+def test_start_banner_tells_the_user_what_triggers_a_turn(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
     _isolate_data_dir(monkeypatch, tmp_path)
@@ -301,8 +314,31 @@ def test_start_banner_names_keyboard_provider_and_its_limitation(
     captured = capsys.readouterr()
 
     assert exit_code == 0
-    # ADR-010: users must not be left guessing why saying "ぽんず" does
-    # nothing -- the keyboard substitute's limitation must be stated plainly.
+    # ADR-013 is now the default, so the banner must name the phrase. It also
+    # states the gate's limitation, so a missed utterance reads as a known
+    # trade-off rather than a broken install.
+    assert "whisper" in captured.out.lower()
+    assert "ぽんず" in captured.out
+
+
+def test_start_banner_states_the_keyboard_substitute_limitation(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    _isolate_data_dir(monkeypatch, tmp_path)
+    _pretend_tty(monkeypatch)
+    _pretend_deps_ok(monkeypatch)
+    _use_keyboard_provider(monkeypatch, tmp_path)
+    fake = FakeOrchestrator()
+    fake.run_forever_error = KeyboardInterrupt()
+    monkeypatch.setattr(
+        cli.factory, "build_orchestrator", lambda cfg, *, voice, speak=False: fake
+    )
+
+    cli.main(["--config", str(tmp_path / "kb.yaml"), "start"])
+    captured = capsys.readouterr()
+
+    # ADR-010: this provider does not listen, and users must not be left
+    # guessing why saying "ぽんず" does nothing.
     assert "keyboard" in captured.out.lower()
     assert "enter" in captured.out.lower()
 
@@ -326,6 +362,7 @@ def test_start_returns_0_on_keyboard_interrupt(monkeypatch, tmp_path: Path) -> N
 
 def test_start_refuses_non_interactive_stdin(monkeypatch, tmp_path: Path, capsys):
     _isolate_data_dir(monkeypatch, tmp_path)
+    _use_keyboard_provider(monkeypatch, tmp_path)
     monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False, raising=False)
     built: list[object] = []
     monkeypatch.setattr(
@@ -334,7 +371,7 @@ def test_start_refuses_non_interactive_stdin(monkeypatch, tmp_path: Path, capsys
         lambda cfg, *, voice, speak=False: built.append(1),
     )
 
-    exit_code = cli.main(["start"])
+    exit_code = cli.main(["--config", str(tmp_path / "kb.yaml"), "start"])
     captured = capsys.readouterr()
 
     # Regression: the keyboard substitute reads stdin, so with no TTY it can
@@ -407,3 +444,29 @@ def test_start_reports_a_failed_turn_to_the_user(monkeypatch, tmp_path: Path, ca
 
     assert "sounddevice is not installed" in captured.err
     assert "ponzu doctor" in captured.err
+
+
+def test_start_announces_that_it_is_listening(monkeypatch, tmp_path: Path, capsys):
+    """A woken assistant must say so.
+
+    Regression: waking printed nothing but JSON, so a user who said the wake
+    word and then paused saw no sign it had heard them -- indistinguishable
+    from no response at all.
+    """
+    from ponzu.core.state import State
+
+    _isolate_data_dir(monkeypatch, tmp_path)
+    _pretend_tty(monkeypatch)
+    _pretend_deps_ok(monkeypatch)
+    fake = FakeOrchestrator()
+    fake.run_forever_error = KeyboardInterrupt()
+    monkeypatch.setattr(
+        cli.factory, "build_orchestrator", lambda cfg, *, voice, speak=False: fake
+    )
+
+    cli.main(["start"])
+    assert fake.state_callback is not None
+    fake.state_callback(State.IDLE, State.LISTENING)
+    captured = capsys.readouterr()
+
+    assert "listening" in captured.out.lower()

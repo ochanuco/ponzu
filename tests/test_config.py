@@ -15,7 +15,18 @@ def test_defaults_load_with_no_file_present(tmp_path: Path) -> None:
     config = load_config(missing)
 
     assert config.wake_word.phrase == "ぽんず"
-    assert config.wake_word.provider == "keyboard"
+    # ADR-013: acoustic detection via the whisper gate is the default now;
+    # "keyboard" (ADR-010) remains available as an explicit opt-in.
+    assert config.wake_word.provider == "whisper"
+    # ADR-013: `base`, not `tiny` -- tiny hears the phrase as コンゼ, which is
+    # edit distance 2 away and would never fire.
+    assert config.wake_word.model == "base"
+    assert config.wake_word.max_distance == 1
+    # Measured ~0.42 for every utterance, so 0.6 rejected correct matches too.
+    assert config.wake_word.sensitivity == 0.3
+    assert config.wake_word.max_window_ms == 3000
+    assert config.wake_word.silence_timeout_ms == 600
+    assert config.wake_word.variants == ["ぽんず", "ポンズ", "ポン酢", "ぽん酢"]
     assert config.llm.provider == "ollama"
     assert config.llm.model == "qwen3:30b"
     assert config.privacy.persist_audio is False
@@ -41,7 +52,7 @@ llm:
     assert config.llm.model == "custom-model"
     # Untouched siblings keep their defaults.
     assert config.wake_word.phrase == "ぽんず"
-    assert config.wake_word.provider == "keyboard"
+    assert config.wake_word.provider == "whisper"
     assert config.llm.provider == "ollama"
     assert config.llm.endpoint == "http://127.0.0.1:11434"
 
@@ -108,6 +119,33 @@ def test_mapping_is_rejected_where_a_scalar_is_expected(tmp_path: Path) -> None:
         load_config(user_config)
 
 
+def test_list_overlay_is_accepted_for_wake_word_variants(tmp_path: Path) -> None:
+    # ADR-013: `wake_word.variants` is the first list-valued default; a
+    # well-formed list of strings must overlay cleanly.
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text('wake_word:\n  variants: ["ぽんず", "ぽんずさん"]\n')
+
+    config = load_config(user_config)
+
+    assert config.wake_word.variants == ["ぽんず", "ぽんずさん"]
+
+
+def test_non_list_is_rejected_where_a_list_is_expected(tmp_path: Path) -> None:
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text('wake_word:\n  variants: "ぽんず"\n')
+
+    with pytest.raises(ConfigError, match="wake_word.variants"):
+        load_config(user_config)
+
+
+def test_list_of_non_strings_is_rejected_for_wake_word_variants(tmp_path: Path) -> None:
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text("wake_word:\n  variants: [1, 2]\n")
+
+    with pytest.raises(ConfigError, match="wake_word.variants"):
+        load_config(user_config)
+
+
 def test_int_is_accepted_for_a_none_defaulted_audio_device(tmp_path: Path) -> None:
     user_config = tmp_path / "config.yaml"
     user_config.write_text("audio:\n  input_device: 3\n")
@@ -148,3 +186,25 @@ def test_write_default_config_copies_example(tmp_path: Path) -> None:
     assert dest.is_file()
     config = load_config(dest)
     assert config.tts.provider == "voicevox"
+
+
+def test_blank_wake_word_variant_is_rejected(tmp_path: Path) -> None:
+    """A blank variant would match every transcript.
+
+    `WhisperWakeWord._matches` tests each variant as a substring, and every
+    string contains "" -- so one stray empty entry turns the wake word into
+    "any speech at all".
+    """
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text('wake_word:\n  variants: ["ぽんず", ""]\n')
+
+    with pytest.raises(ConfigError, match="blank"):
+        load_config(config_file)
+
+
+def test_whitespace_only_wake_word_variant_is_rejected(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text('wake_word:\n  variants: ["ぽんず", "   "]\n')
+
+    with pytest.raises(ConfigError, match="blank"):
+        load_config(config_file)

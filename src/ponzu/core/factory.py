@@ -103,12 +103,17 @@ def build_audio_out(config: Config) -> AudioOutput:
 def build_wake_word(config: Config) -> WakeWordDetector:
     provider = config.wake_word.provider
     cls = _dispatch(_WAKE_WORD_PROVIDERS, provider, "wake_word")
-    # `KeyboardWakeWord` takes the configured phrase; `ManualWakeWord` (and
-    # any future no-argument substitute) takes nothing. This is the one place
-    # that needs to know about that difference -- ADR-010 still only requires
-    # a dict entry, not an orchestrator change, to add a real engine.
+    # Each provider has its own construction signature; this is the one place
+    # that needs to know about the differences -- ADR-010 still only
+    # requires a dict entry, not an orchestrator change, to add a real
+    # engine. `KeyboardWakeWord` takes the configured phrase.
+    # `WhisperWakeWord` (ADR-013) additionally needs `AudioConfig` for
+    # `input_device`/`sample_rate`. `ManualWakeWord` (and any future
+    # no-argument substitute) takes nothing.
     if provider == "keyboard":
         return cls(config.wake_word.phrase)
+    if provider == "whisper":
+        return cls(config.wake_word, config.audio)
     return cls()
 
 

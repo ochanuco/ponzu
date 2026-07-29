@@ -14,6 +14,7 @@ from ponzu.llm.ollama import OllamaLanguageModel
 from ponzu.stt.whisper import WhisperRecognizer
 from ponzu.tts.voicevox import VoicevoxSpeechSynthesizer
 from ponzu.wakeword.keyboard import KeyboardWakeWord
+from ponzu.wakeword.whisper_gate import WhisperWakeWord
 
 
 @pytest.fixture
@@ -53,9 +54,25 @@ def test_build_audio_out_returns_speaker_output(default_config) -> None:
     assert isinstance(factory.build_audio_out(default_config), SpeakerOutput)
 
 
-def test_build_wake_word_returns_keyboard_for_default_config(default_config) -> None:
+def test_build_wake_word_returns_whisper_gate_for_default_config(
+    default_config,
+) -> None:
+    # ADR-013 makes acoustic detection the default; the keyboard substitute is
+    # still selectable but is no longer what a fresh install gets.
     detector = factory.build_wake_word(default_config)
-    assert isinstance(detector, KeyboardWakeWord)
+    assert isinstance(detector, WhisperWakeWord)
+
+
+def test_build_wake_word_still_supports_the_keyboard_substitute(
+    default_config,
+) -> None:
+    import dataclasses
+
+    cfg = dataclasses.replace(
+        default_config,
+        wake_word=dataclasses.replace(default_config.wake_word, provider="keyboard"),
+    )
+    assert isinstance(factory.build_wake_word(cfg), KeyboardWakeWord)
 
 
 # ----------------------------------------------------------- unknown providers

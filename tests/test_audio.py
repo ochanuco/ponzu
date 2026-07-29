@@ -166,6 +166,7 @@ def _config(**overrides) -> AudioConfig:
         "sample_rate": 16000,
         "max_utterance_ms": 10000,
         "silence_timeout_ms": 1200,
+        "speech_start_timeout_ms": 2500,
     }
     base.update(overrides)
     return AudioConfig(**base)
@@ -362,3 +363,24 @@ def test_playback_probe_reports_ok_and_fail_on_device_presence(monkeypatch) -> N
     fail_result = SpeakerOutput().probe()
     assert fail_result.status == "fail"
     assert fail_result.remedy
+
+
+def test_capture_gives_up_when_speech_never_starts(monkeypatch) -> None:
+    """DESIGN section 4.3: bail out instead of running the full max_duration.
+
+    Regression: `silence_timeout_ms` is only consulted once speech has been
+    detected, so a user who said the wake word and then waited to see whether
+    anything happened sat through ten seconds of dead air and got an empty
+    transcript. It read as a broken assistant.
+    """
+    from ponzu.audio.capture import MicrophoneInput
+
+    fake_sd = _fake_input_sounddevice(lambda frames: _silent_pcm(frames))
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    mic = MicrophoneInput(_config(speech_start_timeout_ms=600))
+    buffer = mic.capture_utterance(max_duration_ms=10_000, silence_timeout_ms=1200)
+
+    # 600ms / 30ms chunks == 20 reads, not the 333 that max_duration would take.
+    assert len(fake_sd.calls) == 20
+    assert buffer.pcm == b""  # speech never started, so nothing is returned

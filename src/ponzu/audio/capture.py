@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import array
 import logging
+import time
 from types import ModuleType
 from typing import Any
 
@@ -30,6 +31,11 @@ _SILENCE_RMS_THRESHOLD = 400.0
 # Read the stream in fixed windows so the RMS check and both timeouts
 # (max duration / trailing silence) are evaluated on a regular cadence.
 _CHUNK_MS = 30
+
+
+def _wall_ms(since: float) -> int:
+    """Milliseconds of real time since `since` (a `time.monotonic()` value)."""
+    return int((time.monotonic() - since) * 1000)
 
 
 def _rms(pcm: bytes) -> float:
@@ -92,7 +98,23 @@ class MicrophoneInput:
             dtype="int16",
             device=self._config.input_device,
         ) as stream:
-            while elapsed_ms < max_duration_ms:
+            start_timeout_ms = self._config.speech_start_timeout_ms
+            started_at = time.monotonic()
+            # Two clocks, and the deadline is whichever expires first.
+            #
+            # `elapsed_ms` counts audio: one `_CHUNK_MS` per read. That is the
+            # right clock for reasoning about the signal, and it is what makes
+            # this loop deterministic under a fake device.
+            #
+            # But it assumes each read returns a chunk's worth of audio on
+            # time. When the device delivers slower than real time the two
+            # clocks diverge and the loop blows through its own timeout --
+            # observed running 33 s against a 10 s budget, which looked to the
+            # user like the assistant had simply stopped responding. The wall
+            # clock is the safety net for exactly that.
+            while elapsed_ms < max_duration_ms and _wall_ms(started_at) < (
+                max_duration_ms
+            ):
                 data, _overflowed = stream.read(chunk_frames)
                 pcm_chunk = bytes(data)
                 chunks.append(pcm_chunk)
@@ -105,6 +127,26 @@ class MicrophoneInput:
                     silence_ms += _CHUNK_MS
                     if silence_ms >= silence_timeout_ms:
                         break
+                elif (
+                    elapsed_ms >= start_timeout_ms
+                    or _wall_ms(started_at) >= start_timeout_ms
+                ):
+                    # DESIGN section 4.3: `silence_timeout_ms` only applies
+                    # once speech has started, so without this branch a user
+                    # who says nothing after the wake word waits the full
+                    # `max_utterance_ms`. Ten seconds of dead air reads as a
+                    # broken assistant, which is what it looked like in
+                    # practice.
+                    break
+
+        log_event(
+            self._logger,
+            "capture_finished",
+            wall_ms=_wall_ms(started_at),
+            audio_ms=len(b"".join(chunks)) // 2 * 1000 // self._config.sample_rate,
+            chunks=len(chunks),
+            speech_started=speech_started,
+        )
 
         if not speech_started:
             return AudioBuffer(

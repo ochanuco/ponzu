@@ -139,6 +139,16 @@ that will never fire again.
 - Support configurable sensitivity
 - Avoid persisting microphone audio
 
+### Implementation
+
+ADR-013: an energy gate in front of the existing `faster-whisper` recogniser,
+rather than a dedicated wake-word engine. Transcription runs only once the RMS
+threshold has been crossed, so silence is nearly free. `sensitivity` is the
+minimum transcript confidence accepted for a match.
+
+The detector holds the microphone while idling and releases it before invoking
+the callback, because `voice_turn` opens its own capture stream.
+
 ### Future Considerations
 
 - Custom wake-word model
@@ -156,7 +166,13 @@ that will never fire again.
 - Buffer audio after wake detection
 - Detect end of speech
 - Apply maximum utterance timeout
+- Give up early when speech never starts
 - Normalize audio format for STT
+
+`silence_timeout_ms` only applies once speech has been detected, so an
+utterance that never begins would otherwise run the full `max_utterance_ms`.
+Ten seconds of nothing reads as a broken assistant, so `speech_start_timeout_ms`
+bounds the wait for speech to begin.
 
 ### Recommended Runtime Format
 
@@ -297,8 +313,10 @@ Barge-in should stop playback and transition to listening.
 
 ```yaml
 wake_word:
+  provider: "whisper"
   phrase: "ぽんず"
-  sensitivity: 0.6
+  sensitivity: 0.3 # a floor, not a probability -- see ADR-013
+  model: "base"
 
 stt:
   provider: "faster_whisper"

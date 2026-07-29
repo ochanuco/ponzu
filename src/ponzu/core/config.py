@@ -35,6 +35,21 @@ class WakeWordConfig:
     phrase: str
     sensitivity: float
     provider: str
+    # ADR-013: the whisper gate's own model, kept separate from `stt.model`
+    # so the gate stays cheap while transcription accuracy is unaffected.
+    model: str
+    # Longest audio window the gate will transcribe in one attempt.
+    max_window_ms: int
+    # Trailing silence that ends a window before `max_window_ms` is reached.
+    silence_timeout_ms: int
+    # Accepted transcriptions besides `phrase` itself (ADR-013: a phrase this
+    # short is genuinely ambiguous to an ASR model, so the accepted set is
+    # configuration, not a hidden constant).
+    variants: list[str]
+    # Maximum edit distance from the normalised phrase. ADR-013 measured that
+    # no whisper model transcribes "ぽんず" correctly, so exact matching never
+    # fires; distance 1 works and distance 2 is unusable.
+    max_distance: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +86,9 @@ class AudioConfig:
     sample_rate: int
     max_utterance_ms: int
     silence_timeout_ms: int
+    # Bounds the wait for speech to begin; `silence_timeout_ms` only applies
+    # once speech has already started (DESIGN section 4.3).
+    speech_start_timeout_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,7 +120,30 @@ class Config:
 # file, so the defaults still apply on a machine where the repo checkout
 # (and therefore the example file) isn't present -- e.g. an installed wheel.
 _DEFAULTS: dict[str, Any] = {
-    "wake_word": {"phrase": "ぽんず", "sensitivity": 0.6, "provider": "keyboard"},
+    "wake_word": {
+        "phrase": "ぽんず",
+        # Compared against exp(mean(avg_logprob)), which measured ~0.42 for
+        # every utterance tried, correct or not (ADR-013). This is a floor
+        # against garbage, not a discriminating threshold, so it sits below the
+        # observed band rather than at the 0.6 the original DESIGN example
+        # suggested -- 0.6 rejected everything, including correct matches.
+        "sensitivity": 0.3,
+        # ADR-013: acoustic detection via a whisper gate is now the default.
+        # "keyboard" (ADR-010) and "manual" remain available substitutes.
+        "provider": "whisper",
+        # Kept separate from stt.model so the gate stays cheap (ADR-013).
+        # `base`, not `tiny`: tiny hears the phrase as コンゼ, which is edit
+        # distance 2 away and would never fire. base gives コンズ (distance 1).
+        "model": "base",
+        "max_window_ms": 3000,
+        "silence_timeout_ms": 600,
+        # Extra spellings accepted verbatim, on top of the distance match.
+        "variants": ["ぽんず", "ポンズ", "ポン酢", "ぽん酢"],
+        # Maximum edit distance from the normalised phrase (ADR-013). Measured:
+        # 1 -> 5/7 detected, 1/24 false positives; 2 -> 7/7 but 11/24 false
+        # positives (こんにちは, こんばんは, そんな, ...). Do not raise this.
+        "max_distance": 1,
+    },
     "stt": {
         # ADR-009: the backend is faster-whisper. `model` is either a size name
         # it downloads and caches, or a directory holding a CTranslate2 model --
@@ -144,6 +185,15 @@ _DEFAULTS: dict[str, Any] = {
         "sample_rate": 16000,
         "max_utterance_ms": 10000,
         "silence_timeout_ms": 1200,
+        # How long to wait for speech to *begin* after the wake word. Without
+        # this the capture runs the full max_utterance_ms when the user says
+        # nothing -- ten seconds of dead air that reads as a broken assistant.
+        #
+        # 5s, not the 2.5s tried first: the user has to notice the assistant
+        # woke before they start talking, and 2.5s expired while they were
+        # still reacting to the cue. This bounds dead air without racing the
+        # person it is waiting for.
+        "speech_start_timeout_ms": 5000,
     },
     "privacy": {
         "persist_audio": False,
@@ -239,6 +289,25 @@ def _deep_merge(
             merged[key] = _deep_merge(
                 default_value, value, unknown, type_errors, prefix=f"{dotted}."
             )
+        elif isinstance(default_value, list):
+            # New with `wake_word.variants` (ADR-013): the only list-valued
+            # default so far, so this checks specifically for a list of
+            # strings rather than trying to be a general list validator.
+            if not isinstance(value, list) or not all(
+                isinstance(item, str) for item in value
+            ):
+                type_errors.append(
+                    f"expected a list of strings for {dotted!r}, "
+                    f"got {type(value).__name__}"
+                )
+            elif any(not item.strip() for item in value):
+                # `WhisperWakeWord._matches` tests each variant as a substring,
+                # and every string contains "". A blank entry would therefore
+                # wake the assistant on any non-empty transcript at all, which
+                # is worse than the typo that produced it.
+                type_errors.append(f"{dotted!r} must not contain a blank entry")
+            else:
+                merged[key] = value
         else:
             error = _scalar_type_error(dotted, default_value, value)
             if error is not None:
