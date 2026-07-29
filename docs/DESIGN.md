@@ -312,7 +312,7 @@ llm:
 tts:
   provider: "voicevox"
   endpoint: "http://127.0.0.1:50021"
-  speaker_id: 0
+  speaker_id: 14 # 冥鳴ひまり / ノーマル
 
 privacy:
   persist_audio: false
@@ -505,10 +505,10 @@ Write and high-impact operations should require explicit confirmation.
 | Wake-word engine | Substitute engine initially, behind a stable interface | ADR-010 |
 | STT backend | `faster-whisper`, default model size `small` | ADR-009 |
 | Default local LLM | `qwen3:30b` (Qwen3-30B-A3B); latency handled by streaming | ADR-012 |
+| VOICEVOX speaker | 冥鳴ひまり / ノーマル (style id 14) | section 5.1 |
 
 ### Still Open
 
-- VOICEVOX speaker
 - Packaging and process supervision
 - Short-term context retention policy
 - License

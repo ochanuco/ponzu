@@ -48,7 +48,9 @@ llm:
 tts:
   provider: "voicevox"
   endpoint: "http://127.0.0.1:50021"
-  speaker_id: 0
+  # 冥鳴ひまり / ノーマル. Find other ids with:
+  #   curl -s http://127.0.0.1:50021/speakers | jq '.[] | {name, styles}'
+  speaker_id: 14
   # Voice shaping knobs from DESIGN section 4.7 ("all voice settings should
   # be user configuration, not hard-coded"). Values are VOICEVOX's own
   # neutral defaults.
