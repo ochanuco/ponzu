@@ -139,6 +139,16 @@ that will never fire again.
 - Support configurable sensitivity
 - Avoid persisting microphone audio
 
+### Implementation
+
+ADR-013: an energy gate in front of the existing `faster-whisper` recogniser,
+rather than a dedicated wake-word engine. Transcription runs only once the RMS
+threshold has been crossed, so silence is nearly free. `sensitivity` is the
+minimum transcript confidence accepted for a match.
+
+The detector holds the microphone while idling and releases it before invoking
+the callback, because `voice_turn` opens its own capture stream.
+
 ### Future Considerations
 
 - Custom wake-word model
@@ -297,8 +307,10 @@ Barge-in should stop playback and transition to listening.
 
 ```yaml
 wake_word:
+  provider: "whisper"
   phrase: "ぽんず"
   sensitivity: 0.6
+  model: "tiny"
 
 stt:
   provider: "faster_whisper"

@@ -344,8 +344,9 @@ is no longer running.
   is runnable, and an always-on detector for testing.
 - A real acoustic engine is a drop-in replacement selected by configuration —
   no orchestrator change may be required to adopt it.
-- DESIGN section 4.2's requirement "Detect ぽんず" is **not** satisfied by the
-  MVP. This is a known, recorded gap rather than an oversight.
+- DESIGN section 4.2's requirement "Detect ぽんず" was **not** satisfied by the
+  MVP. ADR-013 closes that gap; the keyboard detector remains available and is
+  still what `ponzu chat`-style non-audio use relies on.
 
 ---
 
@@ -431,3 +432,103 @@ before hearing *something*, which is not the same as how long generation takes.
   produced ~6,800 characters of reasoning and took ~35 s. Loosening it has a
   measurable latency cost.
 - Machines much smaller than 64 GB are out of scope for this default.
+
+---
+
+## ADR-013: Acoustic Wake Word via a Whisper Gate
+
+- **Status:** Accepted
+- **Decision:** Acoustic detection of "ぽんず" is implemented by reusing the
+  existing `faster-whisper` STT behind an energy gate, rather than adding a
+  dedicated wake-word engine. It becomes the default `wake_word.provider`.
+
+### Context
+
+ADR-010 accepted a keyboard substitute and left the real engine open. Three
+dedicated options were evaluated against the constraint that the phrase is
+Japanese and the machine is Apple Silicon:
+
+| Option | Japanese | New dependency | Credential | Effort |
+| --- | --- | --- | --- | --- |
+| openWakeWord | pretrained models are English only | ONNX runtime | none | trains a custom model from synthetic speech |
+| Porcupine | supported, inference is local | `pvporcupine` | free AccessKey | small |
+| sherpa-onnx KWS | no practical Japanese model | `sherpa-onnx` | none | large |
+
+Porcupine is the strongest on accuracy and CPU, but its AccessKey is exactly
+what SECURITY.md classifies as a credential that must never be committed, and
+it makes a core MVP function depend on a proprietary service registration.
+openWakeWord and sherpa-onnx both require producing a Japanese model that does
+not currently exist.
+
+Meanwhile the project already ships a Japanese speech recogniser.
+
+### Decision
+
+The gate runs on its own thread:
+
+```text
+mic stream -> RMS above threshold? -> accumulate until silence
+           -> transcribe the window with a small model
+           -> phrase match -> fire the callback
+```
+
+Transcription only runs when the energy gate has already detected speech, so
+silence costs almost nothing beyond reading the stream.
+
+`wake_word.sensitivity` finally has a meaning: it is the minimum transcript
+confidence accepted for a match. ADR-010 reserved the field for exactly this.
+
+### Consequences
+
+- No new dependency and no credential. The `stt` extra, already required for
+  the voice loop, is the only thing needed.
+- The gate uses its own `wake_word.model`, defaulting to `tiny`, kept separate
+  from `stt.model` so the gate stays cheap while transcription stays accurate.
+- Matching normalises the transcript (NFKC, drop punctuation, fold katakana to
+  hiragana) and then accepts an **edit distance of 1** against the phrase, not
+  an exact match. Measurements below show why exact matching does not work.
+- The gate model is **`base`**, not `tiny`.
+- Accuracy is worse than a purpose-built detector. Expect false negatives on a
+  quiet or distant utterance and occasional false positives on similar-sounding
+  speech. This is the accepted trade for shipping without a credential.
+- CPU cost is proportional to how much speech is in the room, not to elapsed
+  time — but a noisy room does mean continuous transcription.
+- The detector owns the microphone while idling and must release it before the
+  turn runs, since `voice_turn` opens its own capture stream.
+- Porcupine remains a drop-in future provider if the false-positive rate proves
+  unacceptable. ADR-010's interface is unchanged, so adopting it is a
+  configuration change plus one new module.
+
+### Measurements
+
+Synthesised through VOICEVOX at 16 kHz and fed to the recogniser. **No model
+size transcribes the isolated phrase correctly:**
+
+| Model | "ぽんず" | "ねえぽんず" | warm latency |
+| --- | --- | --- | --- |
+| `tiny` | コンゼ | メイコンゼ | ~130 ms |
+| `base` | コンズ | メイポンズ | ~280 ms |
+| `small` | コンズ | メーコンズ | ~780 ms |
+
+A two-mora word in isolation gives the model almost no context, and it lands on
+コンズ/コンゼ every time. Listing observed spellings as variants would be
+overfitting to one recogniser's quirks, so matching is by edit distance on the
+normalised form instead — `こんず` is distance 1 from `ぽんず`.
+
+Distance was chosen by measuring both directions against the transcriptions
+above and 24 everyday phrases:
+
+| Max distance | Detected | False positives |
+| --- | --- | --- |
+| 1 | 5/7 | 1/24 (`ポーズ`) |
+| 2 | 7/7 | 11/24 (`こんにちは`, `こんばんは`, `そんな`, `ほんと`, …) |
+
+Distance 2 is unusable. Distance 1 is the setting, and it is what forces the
+gate model up to `base`: `tiny`'s コンゼ is distance 2 away and would never
+fire.
+
+`sensitivity` compares against `exp(mean(avg_logprob))`, which measured
+~0.42 for every utterance tried — correct and incorrect alike. It is therefore
+a floor against garbage, not a discriminating threshold, and the default is set
+below the observed band rather than at the 0.6 the original DESIGN example
+suggested. Do not read it as a probability.

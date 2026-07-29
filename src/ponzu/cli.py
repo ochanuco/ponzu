@@ -285,12 +285,21 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     provider = cfg.wake_word.provider
     print(f"ponzu start: wake-word provider = {provider!r}")
-    if provider == "keyboard":
+    if provider == "whisper":
+        # ADR-013. Say what actually triggers a turn, and be honest that this
+        # gate is less reliable than a purpose-built detector so a missed
+        # utterance reads as a known limitation rather than a broken install.
+        print(
+            f'say "{cfg.wake_word.phrase}" to start a turn. Detection runs the '
+            f"{cfg.wake_word.model!r} model behind an energy gate (ADR-013), so "
+            "a quiet or distant utterance may be missed."
+        )
+    elif provider == "keyboard":
         # ADR-010: the keyboard substitute does not do acoustic detection.
         # Users must not be left guessing why saying "ぽんず" does nothing.
         print(
-            "keyboard wake word: press Enter to trigger a turn; acoustic "
-            'detection of "ぽんず" is not implemented (ADR-010).'
+            "keyboard wake word: press Enter to trigger a turn; this provider "
+            'does not listen for "ぽんず" (ADR-010).'
         )
         if not sys.stdin.isatty():
             # The substitute reads stdin, so with no terminal it can never fire.
