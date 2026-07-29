@@ -63,6 +63,60 @@ def test_unknown_nested_key_is_rejected(tmp_path: Path) -> None:
         load_config(user_config)
 
 
+def test_wrong_scalar_type_is_rejected_with_dotted_key_named(tmp_path: Path) -> None:
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text('llm:\n  timeout_s: "abc"\n')
+
+    with pytest.raises(ConfigError, match="llm.timeout_s"):
+        load_config(user_config)
+
+
+def test_int_is_accepted_where_a_float_default_is_expected(tmp_path: Path) -> None:
+    # config/default.example.yaml ships `llm.timeout_s: 120` (an int literal
+    # in YAML) against a `float` dataclass field; that must keep working.
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text("llm:\n  timeout_s: 45\n")
+
+    config = load_config(user_config)
+
+    assert config.llm.timeout_s == 45.0
+
+
+def test_bool_is_rejected_where_a_number_is_expected(tmp_path: Path) -> None:
+    # bool is an int subclass in Python; `sensitivity: true` must not be
+    # silently accepted as a numeric value.
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text("wake_word:\n  sensitivity: true\n")
+
+    with pytest.raises(ConfigError, match="wake_word.sensitivity"):
+        load_config(user_config)
+
+
+def test_number_is_rejected_where_a_bool_is_expected(tmp_path: Path) -> None:
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text("privacy:\n  persist_audio: 1\n")
+
+    with pytest.raises(ConfigError, match="privacy.persist_audio"):
+        load_config(user_config)
+
+
+def test_mapping_is_rejected_where_a_scalar_is_expected(tmp_path: Path) -> None:
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text("wake_word:\n  sensitivity:\n    nested: 1\n")
+
+    with pytest.raises(ConfigError, match="wake_word.sensitivity"):
+        load_config(user_config)
+
+
+def test_int_is_accepted_for_a_none_defaulted_audio_device(tmp_path: Path) -> None:
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text("audio:\n  input_device: 3\n")
+
+    config = load_config(user_config)
+
+    assert config.audio.input_device == 3
+
+
 def test_expands_user_and_env_vars_in_path_and_endpoint_values(
     tmp_path: Path, monkeypatch
 ) -> None:

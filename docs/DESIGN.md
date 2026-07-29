@@ -124,7 +124,12 @@ All recoverable failures should transition through `ERROR` and return to `IDLE`.
 start()
 stop()
 on_detected(callback)
+is_running -> bool
 ```
+
+`is_running` was added by ADR-010: without it the orchestrator cannot tell an
+idle detector from one that has died, and the loop waits forever on an engine
+that will never fire again.
 
 ### Requirements
 

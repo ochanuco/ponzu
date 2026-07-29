@@ -157,6 +157,33 @@ def test_synthesize_logs_output_chars_not_text(
     assert "a secret utterance" not in caplog.text
 
 
+def test_synthesize_malformed_audio_query_json_raises_adapter_unavailable() -> None:
+    secret_text_echo = "the input text must never leak into the exception"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/audio_query"
+        return httpx.Response(200, content=secret_text_echo.encode())
+
+    with pytest.raises(AdapterUnavailable) as exc_info:
+        _synth(handler).synthesize(secret_text_echo)
+
+    assert secret_text_echo not in str(exc_info.value)
+
+
+def test_synthesize_non_wav_body_raises_adapter_unavailable() -> None:
+    secret_audio_stand_in = b"this is not a wav file at all"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/audio_query":
+            return httpx.Response(200, json={})
+        return httpx.Response(200, content=secret_audio_stand_in)
+
+    with pytest.raises(AdapterUnavailable) as exc_info:
+        _synth(handler).synthesize("hello")
+
+    assert secret_audio_stand_in.decode() not in str(exc_info.value)
+
+
 def test_probe_ok_when_speaker_present() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/speakers"

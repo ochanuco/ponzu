@@ -159,10 +159,56 @@ _EXPANDABLE: tuple[tuple[str, str], ...] = (
 )
 
 
+def _scalar_type_error(dotted: str, default: Any, value: Any) -> str | None:
+    """Type-check one leaf overlay value against its default's type.
+
+    Returns an error message, or `None` if `value` is acceptable. Dicts are
+    handled by the caller before this is reached; this only ever sees leaves.
+
+    Mirrors YAML's own coercion where it matters (an integer literal like
+    `timeout_s: 120` must still satisfy a `float` default -- this is exactly
+    what `config/default.example.yaml` ships), while keeping `bool` distinct
+    from `int`/`float` even though Python's `bool` is an `int` subclass:
+    `persist_audio: true` must satisfy a bool field, but `sensitivity: true`
+    must not silently satisfy a numeric one.
+    """
+    if default is None:
+        # Only `audio.input_device` / `audio.output_device` default to `None`
+        # in `_DEFAULTS`; the dataclass fields behind them declare
+        # `int | None`, so an int is the one non-null type to accept here
+        # rather than skipping validation for every `None` default.
+        if value is None or (isinstance(value, int) and not isinstance(value, bool)):
+            return None
+        return f"expected an int or null for {dotted!r}, got {type(value).__name__}"
+
+    if isinstance(default, bool):
+        if isinstance(value, bool):
+            return None
+        return f"expected a bool for {dotted!r}, got {type(value).__name__}"
+
+    if isinstance(default, float):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return f"expected a number for {dotted!r}, got {type(value).__name__}"
+        return None
+
+    if isinstance(default, int):
+        if isinstance(value, bool) or not isinstance(value, int):
+            return f"expected an int for {dotted!r}, got {type(value).__name__}"
+        return None
+
+    if isinstance(default, str):
+        if not isinstance(value, str):
+            return f"expected a string for {dotted!r}, got {type(value).__name__}"
+        return None
+
+    return None
+
+
 def _deep_merge(
     defaults: dict[str, Any],
     overlay: dict[str, Any],
     unknown: list[str],
+    type_errors: list[str],
     *,
     prefix: str = "",
 ) -> dict[str, Any]:
@@ -170,7 +216,10 @@ def _deep_merge(
 
     Only keys already present in `defaults` at the same nesting level are
     accepted; everything else is collected in `unknown` so the caller can
-    report every typo at once instead of failing on the first.
+    report every typo at once instead of failing on the first. Scalars are
+    additionally type-checked against the default's type, with every mismatch
+    collected into `type_errors` the same way, instead of assigning them
+    unchecked and letting a wrong type fail later somewhere confusing.
     """
     merged = dict(defaults)
     for key, value in overlay.items():
@@ -178,16 +227,21 @@ def _deep_merge(
         if key not in defaults:
             unknown.append(dotted)
             continue
-        if isinstance(defaults[key], dict):
+        default_value = defaults[key]
+        if isinstance(default_value, dict):
             if not isinstance(value, dict):
                 raise ConfigError(
                     f"expected a mapping for {dotted!r}, got {type(value).__name__}"
                 )
             merged[key] = _deep_merge(
-                defaults[key], value, unknown, prefix=f"{dotted}."
+                default_value, value, unknown, type_errors, prefix=f"{dotted}."
             )
         else:
-            merged[key] = value
+            error = _scalar_type_error(dotted, default_value, value)
+            if error is not None:
+                type_errors.append(error)
+            else:
+                merged[key] = value
     return merged
 
 
@@ -217,10 +271,15 @@ def load_config(path: Path | None = None) -> Config:
                 f"{effective_path} must contain a YAML mapping at the top level"
             )
         unknown: list[str] = []
-        merged = _deep_merge(merged, raw, unknown)
+        type_errors: list[str] = []
+        merged = _deep_merge(merged, raw, unknown, type_errors)
         if unknown:
             raise ConfigError(
                 "unknown configuration key(s): " + ", ".join(sorted(unknown))
+            )
+        if type_errors:
+            raise ConfigError(
+                "invalid configuration value(s): " + "; ".join(type_errors)
             )
 
     for section, key in _EXPANDABLE:

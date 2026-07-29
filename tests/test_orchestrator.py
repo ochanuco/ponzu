@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from ponzu.adapters import (
@@ -300,6 +302,38 @@ def test_loop_survives_an_unexpected_error() -> None:
     # An unexpected exception must not escape onto the detector thread and kill
     # the loop; the orchestrator resets and waits for the next wake word.
     assert orch.state is State.IDLE
+
+
+def test_loop_logs_no_traceback_or_message_for_an_unexpected_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # DESIGN section 7: only the exception type may reach the log, same rule
+    # `_recover` already follows for a `PonzuError`. `_log.exception(...)`
+    # would attach a traceback the `text` formatter prints verbatim, so it
+    # must not be called here.
+    secret_message = "this exception message must never reach the log"
+
+    class Exploding:
+        def transcribe(self, audio):
+            raise ValueError(secret_message)
+
+    detector = ManualWakeWord()
+    orch = Orchestrator(
+        llm=FakeLLM(), stt=Exploding(), audio_in=FakeMic(), wake_word=detector
+    )
+    detector.on_detected(orch._on_wake)
+    detector.start()
+
+    with caplog.at_level(logging.INFO):
+        detector.trigger(None)
+
+    assert secret_message not in caplog.text
+    assert "Traceback" not in caplog.text
+    record = next(
+        r for r in caplog.records if getattr(r, "ponzu_event", None) == "turn_failed"
+    )
+    assert record.ponzu_fields["reason"] == "ValueError"
+    assert record.exc_info is None
 
 
 def test_stop_releases_resources() -> None:

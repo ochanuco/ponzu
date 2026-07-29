@@ -230,8 +230,11 @@ class Orchestrator:
         try:
             result = self.voice_turn()
         except Exception as exc:  # noqa: BLE001 - last line of defence for the loop
-            log_event(_log, "turn_failed", reason="unexpected")
-            _log.exception("unhandled error during turn")
+            # Exception type only, same as `_recover` below: this is not a
+            # PonzuError, but the text/traceback still must not reach the log
+            # under the `text` format (DESIGN section 7). The message itself
+            # still travels in the returned TurnResult for the CLI to print.
+            log_event(_log, "turn_failed", reason=type(exc).__name__)
             self._reset_to_idle()
             result = TurnResult(
                 utterance="",

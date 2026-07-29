@@ -157,12 +157,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     effective_path = args.config if args.config is not None else paths.config_path()
 
     if args.write_config:
-        target = paths.config_path()
-        if target.exists():
-            print(f"config already exists at {target}; not overwritten")
+        # Target the same path `load_config` below is about to read (honours
+        # `--config`), so this invocation initialises the file it then
+        # reports on instead of writing to the default location silently.
+        if effective_path.exists():
+            print(f"config already exists at {effective_path}; not overwritten")
         else:
-            write_default_config(target)
-            print(f"wrote default config to {target}")
+            write_default_config(effective_path)
+            print(f"wrote default config to {effective_path}")
 
     try:
         cfg: Config = load_config(args.config)

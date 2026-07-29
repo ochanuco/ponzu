@@ -138,6 +138,32 @@ def test_generate_logs_message_count_not_content(
     assert "reply text" not in caplog.text
 
 
+def test_generate_malformed_json_raises_adapter_unavailable() -> None:
+    secret_prompt_echo = "this prompt text must never leak into the exception"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=secret_prompt_echo.encode())
+
+    model = _model(handler)
+
+    with pytest.raises(AdapterUnavailable) as exc_info:
+        model.generate([Message(role="user", content="hi")])
+
+    assert secret_prompt_echo not in str(exc_info.value)
+
+
+def test_generate_null_message_raises_adapter_unavailable() -> None:
+    # `{"message": null}` is well-formed JSON but `.get("message", {})` hands
+    # back `None`, not `{}`; `.get("content")` on that raises AttributeError.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"model": "qwen3:30b", "message": None})
+
+    model = _model(handler)
+
+    with pytest.raises(AdapterUnavailable):
+        model.generate([Message(role="user", content="hi")])
+
+
 def test_probe_ok_when_model_present() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/tags"

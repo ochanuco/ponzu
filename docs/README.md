@@ -13,7 +13,8 @@ This archive contains the current project decisions and initial design documents
 
 ## Current MVP Scope
 
-1. Wake word detection
+1. Wake word detection — currently an Enter-key substitute behind the real
+   interface, not acoustic detection (ADR-010)
 2. Speech-to-text
 3. Local LLM inference
 4. Text-to-speech via VOICEVOX

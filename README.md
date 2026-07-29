@@ -78,7 +78,7 @@ uv run ponzu doctor --write-config   # writes a starting config.yaml
 It will not overwrite an existing file. Configuration lives in the user data
 directory, never in the repository (ADR-006):
 
-```
+```text
 ~/Library/Application Support/Ponzu/
 ├── config.yaml
 ├── logs/

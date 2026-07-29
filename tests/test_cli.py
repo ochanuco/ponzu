@@ -159,6 +159,25 @@ def test_doctor_write_config_writes_then_does_not_overwrite(
     assert config_path.stat().st_mtime == written_at
 
 
+def test_doctor_write_config_honours_explicit_config_path(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    # `--write-config` must target the same file `--config` tells `doctor` to
+    # read, not the default data-dir location -- otherwise one invocation
+    # writes one file and reports on another.
+    _isolate_data_dir(monkeypatch, tmp_path)
+    custom_path = tmp_path / "custom" / "config.yaml"
+    default_path = paths.config_path()
+
+    exit_code = cli.main(["--config", str(custom_path), "doctor", "--write-config"])
+    output = capsys.readouterr().out
+
+    assert custom_path.exists()
+    assert not default_path.exists()
+    assert f"wrote default config to {custom_path}" in output
+    assert exit_code in (0, 1)
+
+
 # ------------------------------------------------------------------------ chat
 
 

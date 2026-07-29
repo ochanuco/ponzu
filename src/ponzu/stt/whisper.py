@@ -16,6 +16,7 @@ from types import ModuleType
 from typing import Any
 
 from ponzu.adapters import AdapterUnavailable, AudioBuffer, ProbeResult, Transcript
+from ponzu.core import paths
 from ponzu.core.config import SttConfig
 from ponzu.core.logging import chars, log_event
 
@@ -91,7 +92,14 @@ class WhisperRecognizer:
         # (slow) model-load cost; see module docstring.
         if self._model is None:
             faster_whisper = self._import_faster_whisper()
-            self._model = faster_whisper.WhisperModel(self._config.model)
+            # ADR-006: user data -- including a downloaded model -- lives
+            # under the Ponzu data directory, not faster-whisper's default
+            # Hugging Face cache. `models_dir()` must exist before it can be
+            # used as a download target.
+            paths.ensure_data_dirs()
+            self._model = faster_whisper.WhisperModel(
+                self._config.model, download_root=str(paths.models_dir())
+            )
         return self._model
 
     def transcribe(self, audio: AudioBuffer) -> Transcript:

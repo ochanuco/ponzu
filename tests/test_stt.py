@@ -18,6 +18,7 @@ import types
 import pytest
 
 from ponzu.adapters import AdapterUnavailable, AudioBuffer
+from ponzu.core import paths
 from ponzu.core.config import SttConfig
 
 # ---------------------------------------------------------------------------
@@ -44,8 +45,9 @@ def _fake_faster_whisper(
             self.language = language
 
     class WhisperModel:
-        def __init__(self, model_ref: str) -> None:
+        def __init__(self, model_ref: str, download_root: str | None = None) -> None:
             self.model_ref = model_ref
+            self.download_root = download_root
 
         def transcribe(self, samples, language=None):
             return (
@@ -175,6 +177,29 @@ def test_transcribe_drives_full_cycle_with_fake_backend(monkeypatch) -> None:
     assert transcript.duration_ms == audio.duration_ms
 
 
+def test_transcribe_downloads_model_under_the_ponzu_data_dir(
+    monkeypatch, tmp_path
+) -> None:
+    # ADR-006: a downloaded model lands under the Ponzu data directory, not
+    # faster-whisper's default Hugging Face cache.
+    monkeypatch.setenv("PONZU_DATA_DIR", str(tmp_path / "ponzu-data"))
+
+    from ponzu.stt.whisper import WhisperRecognizer
+
+    fake_fw = _fake_faster_whisper(segments=[(" hi", -0.2)], detected_language="en")
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_fw)
+    monkeypatch.setitem(sys.modules, "numpy", _fake_numpy())
+
+    recognizer = WhisperRecognizer(_config())
+    audio = AudioBuffer(pcm=struct.pack("<2h", 100, -100), sample_rate=16000)
+
+    recognizer.transcribe(audio)
+
+    model = recognizer._model
+    assert model.download_root == str(paths.models_dir())
+    assert paths.models_dir().is_dir()
+
+
 def test_transcribe_caches_model_across_calls(monkeypatch) -> None:
     from ponzu.stt.whisper import WhisperRecognizer
 
@@ -183,9 +208,9 @@ def test_transcribe_caches_model_across_calls(monkeypatch) -> None:
     real_model_cls = fake_fw.WhisperModel
 
     class CountingModel(real_model_cls):
-        def __init__(self, model_ref: str) -> None:
+        def __init__(self, model_ref: str, download_root: str | None = None) -> None:
             load_count["n"] += 1
-            super().__init__(model_ref)
+            super().__init__(model_ref, download_root)
 
     fake_fw.WhisperModel = CountingModel
     monkeypatch.setitem(sys.modules, "faster_whisper", fake_fw)

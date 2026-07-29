@@ -36,18 +36,29 @@ class VoicevoxSpeechSynthesizer:
     def synthesize(self, text: str) -> AudioBuffer:
         start = time.monotonic()
 
-        query = self._request(
-            "post",
-            "/audio_query",
-            params={"text": text, "speaker": self._config.speaker_id},
-        ).json()
-        # Voice settings are configuration, not adapter behavior (DESIGN
-        # section 4.7): mutate the query VOICEVOX generated rather than
-        # letting the caller shape it.
-        query["speedScale"] = self._config.speed
-        query["pitchScale"] = self._config.pitch
-        query["intonationScale"] = self._config.intonation
-        query["volumeScale"] = self._config.volume
+        try:
+            query = self._request(
+                "post",
+                "/audio_query",
+                params={"text": text, "speaker": self._config.speaker_id},
+            ).json()
+            # Voice settings are configuration, not adapter behavior (DESIGN
+            # section 4.7): mutate the query VOICEVOX generated rather than
+            # letting the caller shape it. A non-mapping payload raises
+            # TypeError on assignment, so it is caught alongside the `.json()`
+            # decode failure rather than as a separate case.
+            query["speedScale"] = self._config.speed
+            query["pitchScale"] = self._config.pitch
+            query["intonationScale"] = self._config.intonation
+            query["volumeScale"] = self._config.volume
+        except (ValueError, AttributeError, TypeError) as exc:
+            # Never the response body in the exception (DESIGN section 7) --
+            # audio_query echoes the input text back, same rule the
+            # status-code path in `_request` already keeps.
+            raise AdapterUnavailable(
+                f"VOICEVOX at {self._config.endpoint} returned an unexpected "
+                "audio_query payload"
+            ) from exc
 
         wav_bytes = self._request(
             "post",
@@ -57,7 +68,15 @@ class VoicevoxSpeechSynthesizer:
         ).content
 
         duration_ms = int((time.monotonic() - start) * 1000)
-        audio = _read_wav(wav_bytes)
+        try:
+            audio = _read_wav(wav_bytes)
+        except (wave.Error, EOFError) as exc:
+            # A truncated or non-WAV body from /synthesis; same "status/shape
+            # only, never the body" rule as above.
+            raise AdapterUnavailable(
+                f"VOICEVOX at {self._config.endpoint} returned an invalid WAV "
+                "payload from /synthesis"
+            ) from exc
 
         log_event(
             _logger, "tts_request", output_chars=len(text), duration_ms=duration_ms

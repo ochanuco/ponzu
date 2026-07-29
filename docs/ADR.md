@@ -19,7 +19,8 @@ The name must also work as:
 ### Consequences
 
 - Repository name: `ponzu`
-- CLI examples: `ponzu start`, `ponzu chat`, `ponzu config`
+- CLI examples: `ponzu start`, `ponzu chat` (ADR-011 fixes the MVP surface
+  to `doctor`, `chat`, and `start`; there is no `ponzu config`)
 - The assistant's identity remains "ぽんず" even if its voice changes later.
 
 ---

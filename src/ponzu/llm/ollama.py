@@ -79,9 +79,21 @@ class OllamaLanguageModel:
                 f"{self._config.endpoint}/api/chat"
             )
 
-        data = response.json()
-        text = data.get("message", {}).get("content", "")
-        model = data.get("model", self._config.model)
+        try:
+            data = response.json()
+            # `.get("message", {})`'s default only applies when the key is
+            # absent; `{"message": null}` is well-formed JSON that still
+            # yields `None` here, and `.get("content", ...)` on `None` raises
+            # AttributeError -- caught below along with a non-JSON body,
+            # rather than treated as a valid empty reply.
+            text = data.get("message", {}).get("content", "")
+            model = data.get("model", self._config.model)
+        except (ValueError, AttributeError, TypeError) as exc:
+            # Never the response body in the exception (DESIGN section 7) --
+            # same property the status-code path above already keeps.
+            raise AdapterUnavailable(
+                f"Ollama at {self._config.endpoint} returned an unexpected payload"
+            ) from exc
 
         log_event(
             _logger,
