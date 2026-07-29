@@ -32,6 +32,10 @@ _SILENCE_RMS_THRESHOLD = 400.0
 # (max duration / trailing silence) are evaluated on a regular cadence.
 _CHUNK_MS = 30
 
+# How long to wait before re-checking whether the device has delivered more
+# frames. Short enough not to add audible latency, long enough not to spin.
+_POLL_S = 0.005
+
 
 def _wall_ms(since: float) -> int:
     """Milliseconds of real time since `since` (a `time.monotonic()` value)."""
@@ -115,6 +119,15 @@ class MicrophoneInput:
             while elapsed_ms < max_duration_ms and _wall_ms(started_at) < (
                 max_duration_ms
             ):
+                # `read()` blocks until the frames arrive, with no timeout --
+                # and if the device stops delivering it never returns, so
+                # neither clock above is ever consulted again. That is a hang,
+                # not a slow turn: observed sitting in LISTENING until Ctrl-C.
+                # Waiting only when data is actually available keeps the loop
+                # bounded no matter what the device does.
+                if stream.read_available < chunk_frames:
+                    time.sleep(_POLL_S)
+                    continue
                 data, _overflowed = stream.read(chunk_frames)
                 pcm_chunk = bytes(data)
                 chunks.append(pcm_chunk)

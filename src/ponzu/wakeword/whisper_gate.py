@@ -36,6 +36,9 @@ _AUDIO_REMEDY = "install with: uv sync --extra audio"
 # check and both timeouts (silence / max window) to be evaluated regularly.
 _CHUNK_MS = 30
 
+# Poll interval when the device has not yet delivered a full chunk.
+_POLL_S = 0.005
+
 # Same RMS floor rationale as `ponzu.audio.capture._SILENCE_RMS_THRESHOLD`:
 # comfortably above typical room-noise RMS, comfortably below a spoken
 # syllable, for 16-bit signed PCM (full scale 32767).
@@ -283,6 +286,13 @@ class WhisperWakeWord:
             # 30 ms of audio and a gate that never fired again.
             window_started_at: float | None = None
             while not self._stop_event.is_set():
+                # See `ponzu.audio.capture`: a bare `read()` blocks with no
+                # timeout, so a device that stops delivering would also stop
+                # this loop from ever noticing `_stop_event` -- the detector
+                # would ignore `stop()` and the process would not exit.
+                if stream.read_available < chunk_frames:
+                    time.sleep(_POLL_S)
+                    continue
                 data, _overflowed = stream.read(chunk_frames)
                 pcm_chunk = bytes(data)
 

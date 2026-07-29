@@ -124,6 +124,14 @@ def _fake_input_sounddevice(read_chunks):
             events.append("close")
             return False
 
+        @property
+        def read_available(self):
+            # The real RawInputStream reports how many frames can be read
+            # without blocking; the adapters poll it so a stalled device
+            # cannot wedge the loop. A fake that omitted it would let that
+            # polling regress unnoticed.
+            return 1 << 30
+
         def read(self, frames):
             calls.append(frames)
             return read_chunks(frames), False
@@ -618,3 +626,49 @@ def test_long_silence_before_speech_does_not_truncate_the_window(monkeypatch) ->
 
     # 5 loud chunks + 10 chunks of trailing silence == 450ms, not one chunk.
     assert received[0].duration_ms == 450
+
+
+def test_stop_works_even_when_the_device_stalls(monkeypatch) -> None:
+    """`stop()` must not depend on the microphone delivering audio.
+
+    Regression: the capture loop called `read()` unconditionally, and `read()`
+    blocks with no timeout. A device that stopped delivering meant the loop
+    never came back around to check `_stop_event`, so the detector ignored
+    `stop()` entirely and the process would not exit.
+    """
+    module = types.ModuleType("sounddevice")
+
+    class RawInputStream:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        @property
+        def read_available(self):
+            return 0
+
+        def read(self, frames):  # pragma: no cover - must never be reached
+            raise AssertionError("read() called while nothing was available")
+
+    module.RawInputStream = RawInputStream
+    monkeypatch.setitem(sys.modules, "sounddevice", module)
+
+    from ponzu.wakeword import whisper_gate
+
+    detector = whisper_gate.WhisperWakeWord(_wake_config(), _audio_config())
+    detector.on_detected(lambda confidence: None)
+    detector.start()
+    time.sleep(0.05)
+    assert detector.is_running
+
+    started = time.monotonic()
+    detector.stop()
+    elapsed = time.monotonic() - started
+
+    assert not detector.is_running
+    assert elapsed < 1.0, "stop() did not return promptly"

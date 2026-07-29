@@ -51,6 +51,14 @@ def _fake_input_sounddevice(read_chunks):
         def __exit__(self, exc_type, exc, tb):
             return False
 
+        @property
+        def read_available(self):
+            # The real RawInputStream reports how many frames can be read
+            # without blocking; the adapters poll it so a stalled device
+            # cannot wedge the loop. A fake that omitted it would let that
+            # polling regress unnoticed.
+            return 1 << 30
+
         def read(self, frames):
             calls.append(frames)
             return read_chunks(frames), False
@@ -384,3 +392,51 @@ def test_capture_gives_up_when_speech_never_starts(monkeypatch) -> None:
     # 600ms / 30ms chunks == 20 reads, not the 333 that max_duration would take.
     assert len(fake_sd.calls) == 20
     assert buffer.pcm == b""  # speech never started, so nothing is returned
+
+
+def _stalled_sounddevice():
+    """Fake device that opens fine and then never delivers a single frame."""
+    module = types.ModuleType("sounddevice")
+
+    class RawInputStream:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        @property
+        def read_available(self):
+            return 0
+
+        def read(self, frames):  # pragma: no cover - must never be reached
+            raise AssertionError("read() called while nothing was available")
+
+    module.RawInputStream = RawInputStream
+    return module
+
+
+def test_capture_times_out_when_the_device_never_delivers(monkeypatch) -> None:
+    """A stalled device must time out, not hang.
+
+    Regression: `read()` blocks until frames arrive and takes no timeout, so a
+    device that stopped delivering meant neither the audio clock nor the wall
+    clock was ever consulted again. Observed live as LISTENING with no further
+    events until Ctrl-C.
+    """
+    from ponzu.audio.capture import MicrophoneInput
+
+    monkeypatch.setitem(sys.modules, "sounddevice", _stalled_sounddevice())
+
+    mic = MicrophoneInput(_config(speech_start_timeout_ms=200))
+    started = time.monotonic()
+    buffer = mic.capture_utterance(max_duration_ms=400, silence_timeout_ms=100)
+    elapsed_ms = (time.monotonic() - started) * 1000
+
+    assert buffer.pcm == b""
+    # Bounded by the wall clock, since no audio ever arrived to advance the
+    # audio clock. Generous upper bound so the assertion is about not hanging.
+    assert elapsed_ms < 3000
