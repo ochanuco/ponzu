@@ -124,7 +124,10 @@ _DEFAULTS: dict[str, Any] = {
     "tts": {
         "provider": "voicevox",
         "endpoint": "http://127.0.0.1:50021",
-        "speaker_id": 0,
+        # 冥鳴ひまり / ノーマル. Resolves the "VOICEVOX speaker" entry in
+        # DESIGN section 11. Style ids are engine-assigned, so `ponzu doctor`
+        # checks this against GET /speakers rather than trusting it.
+        "speaker_id": 14,
         "speed": 1.0,
         "pitch": 0.0,
         "intonation": 1.0,
