@@ -1,0 +1,229 @@
+# Architecture Decision Records
+
+## ADR-001: Project Name
+
+- **Status:** Accepted
+- **Decision:** The project and assistant name will be **Ponzu / ぽんず**.
+
+### Context
+
+The assistant is intended to feel like a familiar household companion rather than a formal chatbot, anime character, or theatrical AI butler.
+
+The name must also work as:
+
+- a wake word,
+- a repository name,
+- a CLI command,
+- a persistent identity independent of the selected voice engine.
+
+### Consequences
+
+- Repository name: `ponzu`
+- CLI examples: `ponzu start`, `ponzu chat`, `ponzu config`
+- The assistant's identity remains "ぽんず" even if its voice changes later.
+
+---
+
+## ADR-002: Local-First Architecture
+
+- **Status:** Accepted
+- **Decision:** The MVP will run locally without paid cloud inference APIs.
+
+### Context
+
+The target machine is a MacBook Pro with an M1 Max and 64 GB of memory. This provides sufficient local compute for speech recognition, local LLM inference, and speech synthesis.
+
+### Decision
+
+The initial processing pipeline will be:
+
+```text
+Microphone
+  -> Wake Word
+  -> Speech-to-Text
+  -> Local LLM
+  -> VOICEVOX
+  -> Speaker
+  -> Idle
+```
+
+### Consequences
+
+- No recurring LLM API cost for the MVP.
+- User audio and conversation data remain local by default.
+- Performance and model selection are constrained by the local machine.
+- Cloud services may be added later only as optional adapters.
+
+---
+
+## ADR-003: Discord Is Excluded from the MVP
+
+- **Status:** Accepted
+- **Decision:** Discord integration will not be part of the initial implementation.
+
+### Context
+
+Discord was initially considered as a voice transport layer, but it adds bot lifecycle, connection management, audio encoding, permissions, and operational complexity.
+
+### Consequences
+
+The MVP is limited to direct local interaction:
+
+1. Detect wake word
+2. Capture speech
+3. Transcribe
+4. Generate response
+5. Speak response
+6. Return to idle
+
+Discord may be introduced later as an optional input/output adapter.
+
+---
+
+## ADR-004: VOICEVOX as the Initial TTS Engine
+
+- **Status:** Accepted
+- **Decision:** The MVP will use VOICEVOX for speech synthesis.
+
+### Context
+
+A.I.VOICE and 結月ゆかり remain desirable future options, but their Windows dependency complicates an Apple Silicon-first MVP.
+
+### Consequences
+
+- VOICEVOX Engine is the initial TTS backend.
+- TTS must be behind an adapter interface.
+- Voice identity and assistant identity are kept separate.
+- Future engines may include A.I.VOICE, Style-Bert-VITS2, or other local engines.
+
+---
+
+## ADR-005: Local LLM via Ollama-Compatible Interface
+
+- **Status:** Accepted
+- **Decision:** The initial LLM integration will use a local Ollama-compatible HTTP interface.
+
+### Context
+
+The implementation should avoid coupling the application core to a single model.
+
+### Consequences
+
+- The LLM layer is accessed through an adapter.
+- Model name and endpoint are configuration values.
+- Prompt construction and conversation state remain outside the adapter.
+- Other runtimes may be added later.
+
+---
+
+## ADR-006: Public Repository with Local Private Data
+
+- **Status:** Accepted
+- **Decision:** The source repository may be public, while all user-specific and sensitive data remains outside the repository.
+
+### Public Content
+
+- Source code
+- Default configuration
+- Example configuration
+- Documentation
+- Generic prompts
+- Test fixtures containing no personal data
+
+### Private Content
+
+- API tokens and credentials
+- User configuration
+- Audio recordings
+- Speech transcripts
+- Conversation history
+- Long-term memory
+- Email and calendar data
+- Home network addresses and device names
+- Wake-word training recordings
+- Debug logs containing user content
+
+### Storage Principle
+
+```text
+Git repository
+  -> source, examples, docs
+
+User application data directory
+  -> secrets, configuration, logs, databases, audio, memory
+```
+
+On macOS, the default data location should be:
+
+```text
+~/Library/Application Support/Ponzu/
+```
+
+### Consequences
+
+- `.env.example` may be committed.
+- `.env`, local databases, recordings, and runtime data must be ignored.
+- Logging must avoid raw user content by default.
+- Public release assumes committed content is permanently public.
+
+---
+
+## ADR-007: Modular Pipeline and Adapter Boundaries
+
+- **Status:** Accepted
+- **Decision:** Wake word, STT, LLM, TTS, audio I/O, and future skills will be independently replaceable components.
+
+### Proposed Core Interfaces
+
+```text
+WakeWordDetector
+SpeechRecognizer
+LanguageModel
+SpeechSynthesizer
+AudioInput
+AudioOutput
+Skill
+MemoryStore
+```
+
+### Consequences
+
+- MVP implementation can remain simple.
+- Components can be benchmarked independently.
+- Platform-specific engines do not leak into the application core.
+- Future cloud and remote adapters remain possible without redesigning the whole system.
+
+---
+
+## ADR-008: Conversation State Machine
+
+- **Status:** Accepted
+- **Decision:** The MVP will use an explicit state machine rather than an implicit event chain.
+
+### States
+
+```text
+IDLE
+LISTENING
+TRANSCRIBING
+THINKING
+SPEAKING
+ERROR
+```
+
+### Primary Transition
+
+```text
+IDLE
+ -> LISTENING
+ -> TRANSCRIBING
+ -> THINKING
+ -> SPEAKING
+ -> IDLE
+```
+
+### Consequences
+
+- Cancellation and timeout behavior can be implemented consistently.
+- UI or status indicators can be added later.
+- Failures can return safely to `IDLE`.
