@@ -10,9 +10,7 @@ from ponzu.core import paths
 
 def test_data_dir_defaults_to_application_support(monkeypatch) -> None:
     monkeypatch.delenv("PONZU_DATA_DIR", raising=False)
-    assert paths.data_dir() == Path(
-        "~/Library/Application Support/Ponzu"
-    ).expanduser()
+    assert paths.data_dir() == Path("~/Library/Application Support/Ponzu").expanduser()
 
 
 def test_data_dir_honours_env_override(monkeypatch, tmp_path: Path) -> None:

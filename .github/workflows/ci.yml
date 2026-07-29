@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# SECURITY.md requires read-only default Actions permissions.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-14 # Apple Silicon, matching the ADR-009 target platform.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # No extras. ADR-009 requires the package to install and the suite to run
+      # without sounddevice, numpy, or faster-whisper present — CI is what keeps
+      # that true, so installing the extras here would defeat the check.
+      - run: uv sync --extra dev
+
+      - run: uv run ruff check .
+
+      - run: uv run ruff format --check .
+
+      - run: uv run pytest -q
