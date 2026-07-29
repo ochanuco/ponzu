@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ponzu"
+version = "0.1.0"
+description = "Local-first voice assistant (wake word -> STT -> local LLM -> TTS)."
+requires-python = ">=3.11"
+readme = "README.md"
+# Core deps stay minimal on purpose (DESIGN section 6, ADR-009): the base
+# install must work on a machine with no audio stack so `ponzu chat` and the
+# test suite are runnable everywhere. httpx talks to Ollama/VOICEVOX over
+# loopback HTTP; pyyaml reads the user config (DESIGN section 5).
+dependencies = [
+    "httpx",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+# Hardware-bound extras (ADR-009 consequences): only needed for the real
+# audio/wakeword/STT backends, never for orchestration or `ponzu chat`.
+audio = ["sounddevice", "numpy"]
+stt = ["faster-whisper"]
+# CLI intentionally uses argparse (see project brief), so dev tooling here is
+# just test/lint, not a CLI framework.
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+ponzu = "ponzu.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ponzu"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

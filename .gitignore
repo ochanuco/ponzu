@@ -1,0 +1,33 @@
+# --- SECURITY.md "Recommended .gitignore" (verbatim) ---
+.env
+.env.*
+!.env.example
+
+config.local.*
+*.db
+*.sqlite
+*.sqlite3
+
+audio/
+recordings/
+logs/
+models/
+data/private/
+runtime/
+
+*.wav
+*.mp3
+*.m4a
+*.pcm
+
+.DS_Store
+
+# --- Python / uv (added per project brief; uv.lock is intentionally NOT
+# ignored -- ADR-009 treats pyproject.toml + uv.lock as the single source of
+# dependency truth) ---
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
