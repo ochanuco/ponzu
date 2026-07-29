@@ -8,6 +8,8 @@ version = "0.1.0"
 description = "Local-first voice assistant (wake word -> STT -> local LLM -> TTS)."
 requires-python = ">=3.11"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 # Core deps stay minimal on purpose (DESIGN section 6, ADR-009): the base
 # install must work on a machine with no audio stack so `ponzu chat` and the
 # test suite are runnable everywhere. httpx talks to Ollama/VOICEVOX over
