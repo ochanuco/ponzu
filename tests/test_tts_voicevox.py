@@ -29,6 +29,7 @@ def _config(**overrides: object) -> TtsConfig:
         "pitch": 0.0,
         "intonation": 1.0,
         "volume": 1.0,
+        "timeout_s": 60.0,
     }
     base.update(overrides)
     return TtsConfig(**base)  # type: ignore[arg-type]
@@ -39,7 +40,9 @@ def _synth(handler, **config_overrides: object) -> VoicevoxSpeechSynthesizer:
     return VoicevoxSpeechSynthesizer(_config(**config_overrides), client=client)
 
 
-def _make_wav(pcm: bytes, *, sample_rate: int, channels: int, sample_width: int) -> bytes:
+def _make_wav(
+    pcm: bytes, *, sample_rate: int, channels: int, sample_width: int
+) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wav_file:
         wav_file.setnchannels(channels)
@@ -132,7 +135,9 @@ def test_synthesize_500_raises_adapter_unavailable_without_leaking_body() -> Non
     assert secret_text_echo not in str(exc_info.value)
 
 
-def test_synthesize_logs_output_chars_not_text(caplog: pytest.LogCaptureFixture) -> None:
+def test_synthesize_logs_output_chars_not_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     pcm = b"\x00\x00" * 10
     wav_bytes = _make_wav(pcm, sample_rate=24000, channels=1, sample_width=2)
 
@@ -144,7 +149,9 @@ def test_synthesize_logs_output_chars_not_text(caplog: pytest.LogCaptureFixture)
     with caplog.at_level(logging.INFO, logger="ponzu.tts.voicevox"):
         _synth(handler).synthesize("a secret utterance")
 
-    record = next(r for r in caplog.records if getattr(r, "ponzu_event", None) == "tts_request")
+    record = next(
+        r for r in caplog.records if getattr(r, "ponzu_event", None) == "tts_request"
+    )
     assert record.ponzu_fields["output_chars"] == len("a secret utterance")
     assert "duration_ms" in record.ponzu_fields
     assert "a secret utterance" not in caplog.text

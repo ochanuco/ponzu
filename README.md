@@ -59,13 +59,24 @@ starting the loop.
 
 `chat` exercises the same orchestration and prompt layer as `start` over stdin
 and stdout, which makes it the fastest way to check that the model and persona
-behave before involving audio.
+behave before involving audio. It also takes a single utterance for scripting,
+and can speak its replies while still taking typed input:
+
+```sh
+uv run ponzu chat "こんにちは"   # one turn, then exit
+uv run ponzu chat --speak       # typed input, spoken reply
+```
 
 ## Configuration
 
-Ponzu runs with built-in defaults and no configuration file. To customise it,
-copy the example into the user data directory — which is where configuration
-lives, never in the repository (ADR-006):
+Ponzu runs with built-in defaults and no configuration file. To customise it:
+
+```sh
+uv run ponzu doctor --write-config   # writes a starting config.yaml
+```
+
+It will not overwrite an existing file. Configuration lives in the user data
+directory, never in the repository (ADR-006):
 
 ```
 ~/Library/Application Support/Ponzu/

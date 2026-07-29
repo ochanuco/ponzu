@@ -298,10 +298,37 @@ Acoustic wake-word detection for a Japanese phrase requires either a custom
 trained model or a licensed engine. Blocking the entire voice loop on that work
 would prevent the rest of the pipeline from being exercised end to end.
 
+### Interface
+
+```text
+start()
+stop()
+on_detected(callback)
+is_running -> bool
+```
+
+`is_running` is an addition to the three methods listed in DESIGN section 4.2.
+Without it the orchestrator cannot distinguish "idle, waiting for a wake word"
+from "the detector has died", and those two states look identical from the
+outside: the loop simply never fires again.
+
+This is not hypothetical. The keyboard substitute reaches end-of-stream when
+stdin is not interactive — piped input, a service manager with no controlling
+terminal — and its reader thread exits immediately. A loop that only watches
+its own stop flag then spins forever without ever being able to accept a turn,
+which DESIGN section 8 forbids ("the assistant must not remain stuck").
+
+DESIGN section 8 also lists "wake-word engine restart" as a recoverable
+failure, which likewise requires the loop to be able to observe that the engine
+is no longer running.
+
 ### Consequences
 
-- The interface (`start` / `stop` / `on_detected`) is fixed now; the engine
-  behind it is not.
+- The interface (`start` / `stop` / `on_detected` / `is_running`) is fixed now;
+  the engine behind it is not.
+- `run_forever` exits when the detector stops on its own, instead of spinning.
+- `ponzu start` refuses to start the keyboard substitute on a non-interactive
+  stdin, rather than appearing to run while being unable to ever respond.
 - The MVP ships a keyboard-triggered detector as the default so `ponzu start`
   is runnable, and an always-on detector for testing.
 - A real acoustic engine is a drop-in replacement selected by configuration —

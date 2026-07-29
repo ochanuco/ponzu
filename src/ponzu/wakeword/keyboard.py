@@ -92,6 +92,15 @@ class KeyboardWakeWord:
             ):
                 self._callback(None)
 
+    @property
+    def is_running(self) -> bool:
+        """False once the reader thread has exited, including on stdin EOF.
+
+        ADR-010: this is what lets `Orchestrator.run_forever` exit instead of
+        spinning forever when stdin was never interactive to begin with.
+        """
+        return self._thread is not None and self._thread.is_alive()
+
     def stop(self) -> None:
         """Signal the reader thread to stop and wait briefly for it to exit.
 
@@ -115,7 +124,7 @@ class KeyboardWakeWord:
         self._callback = callback
 
     def probe(self) -> ProbeResult:
-        """"ok" on an interactive terminal, "warn" (never "fail") otherwise.
+        """ "ok" on an interactive terminal, "warn" (never "fail") otherwise.
 
         A non-interactive stdin (piped input, a non-interactive shell, a
         service manager with no controlling terminal) means the keyboard

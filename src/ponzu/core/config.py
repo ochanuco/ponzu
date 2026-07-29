@@ -61,6 +61,7 @@ class TtsConfig:
     pitch: float
     intonation: float
     volume: float
+    timeout_s: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +122,11 @@ _DEFAULTS: dict[str, Any] = {
         "pitch": 0.0,
         "intonation": 1.0,
         "volume": 1.0,
+        # DESIGN section 8 lists "VOICEVOX unavailable" as a recoverable
+        # failure, which requires a bounded wait rather than the HTTP client's
+        # default. Synthesis of a long reply is slower than a chat completion
+        # round trip, hence the larger value than llm.timeout_s.
+        "timeout_s": 60.0,
     },
     "audio": {
         "input_device": None,

@@ -189,8 +189,13 @@ class Orchestrator:
         self._wake_word.start()
         log_event(_log, "loop_started")
         try:
-            while not self._stop_requested:
+            # ADR-010: also exit when the detector stops on its own. A detector
+            # that has reached end-of-stream will never fire again, and waiting
+            # on it is exactly the stuck state DESIGN section 8 forbids.
+            while not self._stop_requested and self._wake_word.is_running:
                 time.sleep(0.1)
+            if not self._stop_requested:
+                log_event(_log, "loop_ended", reason="detector_stopped")
         except KeyboardInterrupt:
             log_event(_log, "loop_interrupted")
         finally:

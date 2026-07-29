@@ -45,12 +45,18 @@ def test_generate_happy_path() -> None:
         ]
         return httpx.Response(
             200,
-            json={"model": "qwen3:30b", "message": {"role": "assistant", "content": "hello"}},
+            json={
+                "model": "qwen3:30b",
+                "message": {"role": "assistant", "content": "hello"},
+            },
         )
 
     model = _model(handler)
     result = model.generate(
-        [Message(role="system", content="be concise"), Message(role="user", content="hi")]
+        [
+            Message(role="system", content="be concise"),
+            Message(role="user", content="hi"),
+        ]
     )
 
     assert result.text == "hello"
@@ -109,7 +115,9 @@ def test_generate_500_raises_adapter_unavailable_without_leaking_body() -> None:
     assert secret_prompt_echo not in str(exc_info.value)
 
 
-def test_generate_logs_message_count_not_content(caplog: pytest.LogCaptureFixture) -> None:
+def test_generate_logs_message_count_not_content(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200, json={"model": "qwen3:30b", "message": {"content": "reply text"}}
@@ -120,7 +128,9 @@ def test_generate_logs_message_count_not_content(caplog: pytest.LogCaptureFixtur
     with caplog.at_level(logging.INFO, logger="ponzu.llm.ollama"):
         model.generate([Message(role="user", content="a very secret user prompt")])
 
-    record = next(r for r in caplog.records if getattr(r, "ponzu_event", None) == "llm_request")
+    record = next(
+        r for r in caplog.records if getattr(r, "ponzu_event", None) == "llm_request"
+    )
     assert record.ponzu_fields["message_count"] == 1
     assert record.ponzu_fields["model"] == "qwen3:30b"
     assert "duration_ms" in record.ponzu_fields

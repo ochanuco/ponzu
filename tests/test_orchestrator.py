@@ -311,3 +311,31 @@ def test_stop_releases_resources() -> None:
     orch.stop()
 
     assert speaker.cancels == 1
+
+
+def test_loop_exits_when_detector_stops_on_its_own() -> None:
+    # ADR-010 / DESIGN section 8: a detector that has reached end-of-stream can
+    # never fire again. Waiting on it forever is the stuck state the spec
+    # forbids, so run_forever must return rather than spin.
+    class DeadDetector:
+        def __init__(self) -> None:
+            self.stopped = 0
+
+        def start(self) -> None: ...
+
+        def stop(self) -> None:
+            self.stopped += 1
+
+        def on_detected(self, callback) -> None: ...
+
+        @property
+        def is_running(self) -> bool:
+            return False
+
+    detector = DeadDetector()
+    orch = Orchestrator(llm=FakeLLM(), wake_word=detector)
+
+    orch.run_forever()  # must return, not hang
+
+    assert detector.stopped >= 1
+    assert orch.state is State.IDLE

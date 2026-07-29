@@ -46,6 +46,13 @@ class ManualWakeWord:
     def stop(self) -> None:
         self._started = False
 
+    @property
+    def is_running(self) -> bool:
+        """ADR-010 liveness. There is no stream to end, so this tracks
+        `start`/`stop` exactly — a programmatic detector never dies on its own.
+        """
+        return self._started
+
     def on_detected(self, callback: Callable[[float | None], None]) -> None:
         """Register the detection callback.
 

@@ -31,13 +31,15 @@ class VoicevoxSpeechSynthesizer:
         self._config = config
         # Injected client is what lets tests drive this against
         # `httpx.MockTransport` instead of a running engine.
-        self._client = client or httpx.Client()
+        self._client = client or httpx.Client(timeout=config.timeout_s)
 
     def synthesize(self, text: str) -> AudioBuffer:
         start = time.monotonic()
 
         query = self._request(
-            "post", "/audio_query", params={"text": text, "speaker": self._config.speaker_id}
+            "post",
+            "/audio_query",
+            params={"text": text, "speaker": self._config.speaker_id},
         ).json()
         # Voice settings are configuration, not adapter behavior (DESIGN
         # section 4.7): mutate the query VOICEVOX generated rather than
@@ -48,13 +50,18 @@ class VoicevoxSpeechSynthesizer:
         query["volumeScale"] = self._config.volume
 
         wav_bytes = self._request(
-            "post", "/synthesis", params={"speaker": self._config.speaker_id}, json=query
+            "post",
+            "/synthesis",
+            params={"speaker": self._config.speaker_id},
+            json=query,
         ).content
 
         duration_ms = int((time.monotonic() - start) * 1000)
         audio = _read_wav(wav_bytes)
 
-        log_event(_logger, "tts_request", output_chars=len(text), duration_ms=duration_ms)
+        log_event(
+            _logger, "tts_request", output_chars=len(text), duration_ms=duration_ms
+        )
 
         return audio
 
@@ -97,7 +104,9 @@ class VoicevoxSpeechSynthesizer:
 
         if self._config.speaker_id in style_ids:
             return ProbeResult(
-                component="tts", status="ok", detail=f"speaker {self._config.speaker_id} available"
+                component="tts",
+                status="ok",
+                detail=f"speaker {self._config.speaker_id} available",
             )
         return ProbeResult(
             component="tts",
@@ -114,7 +123,9 @@ class VoicevoxSpeechSynthesizer:
         adapter) isn't written out twice in this one class.
         """
         try:
-            response = self._client.request(method, f"{self._config.endpoint}{path}", **kwargs)
+            response = self._client.request(
+                method, f"{self._config.endpoint}{path}", **kwargs
+            )
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             # Checked before the broader TimeoutException below: ConnectTimeout
             # is itself a TimeoutException subclass.

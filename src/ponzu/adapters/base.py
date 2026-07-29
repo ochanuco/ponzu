@@ -142,6 +142,16 @@ class WakeWordDetector(Protocol):
         """Register a callback receiving detection confidence, if available."""
         ...
 
+    @property
+    def is_running(self) -> bool:
+        """Whether the detector can still deliver detections.
+
+        A detector that has reached end-of-stream is indistinguishable from an
+        idle one without this: the loop just never fires again. ADR-010 records
+        why it is part of the interface.
+        """
+        ...
+
 
 @runtime_checkable
 class AudioInput(Protocol):

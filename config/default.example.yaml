@@ -45,6 +45,10 @@ tts:
   pitch: 0.0
   intonation: 1.0
   volume: 1.0
+  # DESIGN section 8 treats "VOICEVOX unavailable" as recoverable, so the wait
+  # must be bounded. Higher than llm.timeout_s because synthesising a long
+  # reply takes longer than a chat completion round trip.
+  timeout_s: 60.0
 
 audio:
   # null selects the OS default input/output device (sounddevice convention).
