@@ -64,6 +64,7 @@ def _audio_config(**overrides) -> AudioConfig:
         "max_utterance_ms": 10000,
         "silence_timeout_ms": 1200,
         "speech_start_timeout_ms": 2500,
+        "follow_up_ms": 4000,
     }
     base.update(overrides)
     return AudioConfig(**base)

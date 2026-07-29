@@ -289,6 +289,53 @@ def _report_turn(result: TurnResult) -> None:
     print("Run `ponzu doctor` to check dependencies.", file=sys.stderr)
 
 
+class _ThinkingPrinter:
+    """Streams reasoning fragments to the terminal, dim (ADR-015).
+
+    Subscribed via `Orchestrator.on_thinking` only when `logging.show_thinking`
+    is true; with it false the CLI does not subscribe at all, so nothing is
+    printed and nothing about this class runs.
+
+    Printed fragment by fragment as they arrive rather than buffered, so a
+    paragraph of reasoning fills the ~ten seconds `qwen3:30b` otherwise spends
+    in silence (ADR-014's measurement) instead of appearing all at once right
+    before the reply. Dim styling is what makes it read as distinct from the
+    reply, which `_report_turn` prints with no styling at all -- the reply is
+    what the assistant said, reasoning is not.
+
+    Never routed through `log_event`: DESIGN section 7 excludes model output
+    from logs, and reasoning is model output. This reaches only a terminal
+    the user is already watching, which is a different act from writing it to
+    a file.
+    """
+
+    _DIM = "\033[2m"
+    _RESET = "\033[0m"
+
+    def __init__(self) -> None:
+        self._open = False
+
+    def __call__(self, fragment: str) -> None:
+        """Registered as the `on_thinking` subscriber; prints one fragment."""
+        if not fragment:
+            return
+        if not self._open:
+            print(self._DIM, end="", flush=True)
+            self._open = True
+        print(fragment, end="", flush=True)
+
+    def finish(self) -> None:
+        """End the dim run with a newline before anything else prints.
+
+        Called from `_report_turn_with_thinking` right before the reply, so
+        the reply always starts its own line instead of continuing directly
+        after the last reasoning fragment.
+        """
+        if self._open:
+            print(self._RESET, flush=True)
+            self._open = False
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     """Run the full voice loop (ADR-011)."""
     try:
@@ -347,14 +394,33 @@ def cmd_start(args: argparse.Namespace) -> int:
         print("Run `ponzu doctor` to check dependencies.", file=sys.stderr)
         return 1
 
+    # ADR-015: on by default. When disabled, the CLI does not subscribe to
+    # `on_thinking` at all -- there is no adapter-side switch, and the
+    # orchestrator forwards fragments regardless of whether anyone is
+    # listening, so not subscribing is what "off" means here.
+    thinking_printer = _ThinkingPrinter() if cfg.logging.show_thinking else None
+    if thinking_printer is not None:
+        orchestrator.on_thinking(thinking_printer)
+
+    def _report_turn_with_thinking(result: TurnResult) -> None:
+        # Close the dim reasoning run (if one is open) before the reply, so
+        # the reply always starts its own line instead of continuing directly
+        # after the last reasoning fragment.
+        if thinking_printer is not None:
+            thinking_printer.finish()
+        _report_turn(result)
+
     # DESIGN section 8 step 2: a failure should produce a message when
     # possible. Without this the terminal shows only a JSON `turn_failed`
     # event naming the exception type, which does not tell the user what to fix.
-    orchestrator.on_turn(_report_turn)
+    orchestrator.on_turn(_report_turn_with_thinking)
     # Without a cue the terminal shows only JSON while the assistant waits for
     # an utterance, so a user who woke it and then paused had no way to tell it
     # was listening -- it read as no response at all (DESIGN section 8 asks for
-    # a message on failure; this is the same problem before the failure).
+    # a message on failure; this is the same problem before the failure). This
+    # is also what announces an ADR-015 follow-up window: SPEAKING -> LISTENING
+    # fires the same cue, so "listening..." prints again with no extra wording
+    # needed to say a follow-up is different from a fresh wake.
     orchestrator.on_state_change(_announce_state)
 
     try:

@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 
 import httpx
 
@@ -107,7 +107,11 @@ class OllamaLanguageModel:
         return ModelResponse(text=text, model=model, duration_ms=duration_ms)
 
     def generate_stream(
-        self, messages: Iterable[Message], *, timeout_s: float | None = None
+        self,
+        messages: Iterable[Message],
+        *,
+        timeout_s: float | None = None,
+        on_thinking: Callable[[str], None] | None = None,
     ) -> Iterator[str]:
         """Yield `message.content` fragments as Ollama streams them (ADR-014).
 
@@ -117,6 +121,11 @@ class OllamaLanguageModel:
         a `thinking` field, and a chunk that carries only `thinking` must yield
         nothing rather than falling back to it, or the assistant would speak
         its reasoning aloud.
+
+        ADR-015: a chunk's `thinking` fragment, if present and non-empty, goes
+        to `on_thinking` instead -- still never yielded. This adapter stays
+        transport-only (ADR-005): it forwards what the backend sent and
+        interprets nothing.
         """
         payload_messages = [
             {"role": message.role, "content": message.content} for message in messages
@@ -168,12 +177,15 @@ class OllamaLanguageModel:
                     message_count += 1
                     model_name = data.get("model", model_name)
                     message = data.get("message") or {}
-                    content = (
-                        message.get("content") if isinstance(message, dict) else None
-                    )
+                    is_message_dict = isinstance(message, dict)
+                    content = message.get("content") if is_message_dict else None
                     if content:
                         output_chars += len(content)
                         yield content
+
+                    thinking = message.get("thinking") if is_message_dict else None
+                    if thinking and on_thinking is not None:
+                        on_thinking(thinking)
 
                     if data.get("done"):
                         break

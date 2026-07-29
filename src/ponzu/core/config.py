@@ -89,6 +89,12 @@ class AudioConfig:
     # Bounds the wait for speech to begin; `silence_timeout_ms` only applies
     # once speech has already started (DESIGN section 4.3).
     speech_start_timeout_ms: int
+    # ADR-015: after speaking, how long to keep listening with no wake word
+    # before giving up and returning to IDLE. `0` disables the feature
+    # entirely -- a false-trigger risk (room noise crossing the capture's RMS
+    # floor with no wake word standing between it and a turn), so it must be
+    # possible to turn off.
+    follow_up_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +108,13 @@ class PrivacyConfig:
 class LoggingConfig:
     level: str
     format: str
+    # ADR-015: `qwen3:30b` spends ~99% of a turn on reasoning before the
+    # first character of the answer exists (ADR-014's measurement). Printing
+    # it to the terminal fills that silence; default True because an
+    # assistant that looks frozen for ten seconds is the worse failure. Never
+    # logged regardless of this setting -- DESIGN section 7 excludes model
+    # output from logs, and reasoning is model output.
+    show_thinking: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,13 +207,24 @@ _DEFAULTS: dict[str, Any] = {
         # still reacting to the cue. This bounds dead air without racing the
         # person it is waiting for.
         "speech_start_timeout_ms": 5000,
+        # ADR-015: how long to keep listening after speaking, with no wake
+        # word needed, before giving up and returning to IDLE. 4000, not
+        # speech_start_timeout_ms's 5000 -- a follow-up already has the
+        # user's attention, so it does not need as generous a reaction
+        # window. `0` disables the feature entirely.
+        "follow_up_ms": 4000,
     },
     "privacy": {
         "persist_audio": False,
         "persist_transcripts": False,
         "persist_conversations": False,
     },
-    "logging": {"level": "info", "format": "json"},
+    "logging": {
+        "level": "info",
+        "format": "json",
+        # ADR-015: on by default -- see LoggingConfig.show_thinking.
+        "show_thinking": True,
+    },
 }
 
 # (section, key) pairs holding filesystem paths or network endpoints, where

@@ -11,6 +11,7 @@ adapters constructed at all.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 from collections.abc import Callable, Iterable
@@ -42,6 +43,32 @@ _JA_TERMINATORS = "。！？"
 # `.` immediately followed by a non-space character (as in "3.5") is left
 # alone -- see `_SentenceSplitter._find_cut` below.
 _ASCII_TERMINATORS = ".!?"
+
+# ADR-015: caps how many follow-up turns can chain consecutively after a
+# wake-word turn, so room noise crossing the capture's RMS floor cannot keep
+# a "conversation" running forever with no wake word standing between it and
+# a turn. Small and fixed rather than configuration -- there is no evidence
+# yet that it needs tuning per-install the way the window length does.
+_MAX_CONSECUTIVE_FOLLOW_UPS = 3
+
+
+def _accepts_on_thinking(stream_fn: Callable[..., Iterable[str]]) -> bool:
+    """Whether `stream_fn` can be called with an `on_thinking` kwarg.
+
+    ADR-015 adds `on_thinking` to the `LanguageModel.generate_stream`
+    protocol, but existing fakes and future adapters are not required to
+    accept it (base.py's own docstring makes it optional). Inspecting the
+    signature here is what lets the orchestrator forward reasoning to a real
+    adapter while still working with a fake that only declares `messages` and
+    `timeout_s`.
+    """
+    try:
+        params = inspect.signature(stream_fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return "on_thinking" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
 
 
 def _elapsed_ms(since: float) -> int:
@@ -173,6 +200,7 @@ class Orchestrator:
         llm_timeout_s: float | None = None,
         max_utterance_ms: int = 15_000,
         silence_timeout_ms: int = 1_200,
+        follow_up_ms: int = 0,
     ) -> None:
         self._llm = llm
         self._context = context if context is not None else ConversationContext()
@@ -184,9 +212,13 @@ class Orchestrator:
         self._llm_timeout_s = llm_timeout_s
         self._max_utterance_ms = max_utterance_ms
         self._silence_timeout_ms = silence_timeout_ms
+        # ADR-015: 0 disables the follow-up window entirely (a false-trigger
+        # risk, so it must be possible to turn off).
+        self._follow_up_ms = follow_up_ms
         self._machine = StateMachine()
         self._stop_requested = False
         self._turn_callback: Callable[[TurnResult], None] | None = None
+        self._thinking_callback: Callable[[str], None] | None = None
 
     @property
     def state(self) -> State:
@@ -206,6 +238,28 @@ class Orchestrator:
         the CLI say what went wrong.
         """
         self._turn_callback = callback
+
+    def on_thinking(self, callback: Callable[[str], None]) -> None:
+        """Subscribe to reasoning fragments during a streamed voice turn.
+
+        ADR-015: `generate_stream`'s `on_thinking` parameter is where a
+        backend hands over reasoning it separates from its answer. This is
+        the seam that lets the CLI print it live without the orchestrator (a
+        library) writing to a terminal itself, and without reasoning ever
+        being logged (DESIGN section 7 -- reasoning is model output). Default
+        is no subscriber, in which case behaviour is exactly as before this
+        existed: fragments are still requested from the adapter (when it
+        supports `on_thinking`) but nothing is done with them.
+        """
+        self._thinking_callback = callback
+
+    def _forward_thinking(self, fragment: str) -> None:
+        """Internal forwarder passed to `generate_stream` as `on_thinking`.
+
+        Never routed through `log_event` -- see `on_thinking` above.
+        """
+        if self._thinking_callback is not None:
+            self._thinking_callback(fragment)
 
     # ------------------------------------------------------------------
     # Turns
@@ -229,12 +283,38 @@ class Orchestrator:
         self._finish(metrics)
         return TurnResult(utterance=utterance, response=response, metrics=metrics)
 
-    def voice_turn(self) -> TurnResult:
+    def voice_turn(self, *, speech_start_timeout_ms: int | None = None) -> TurnResult:
         """Run a full capture → transcribe → think → speak turn.
 
         Requires the audio and STT adapters; calling it without them is a wiring
         bug, not a recoverable runtime failure, so it raises rather than
         returning a failed ``TurnResult``.
+
+        Always finalises to IDLE on success. ADR-015's follow-up chaining
+        (`_on_wake`) calls `_run_turn_pipeline` directly instead, so it can
+        transition SPEAKING → LISTENING for the next window rather than
+        detouring through an IDLE that never really happened.
+        """
+        result, pending_idle = self._run_turn_pipeline(speech_start_timeout_ms)
+        if pending_idle:
+            self._machine.transition(State.IDLE)
+            self._finish(result.metrics)
+        return result
+
+    def _run_turn_pipeline(
+        self, speech_start_timeout_ms: int | None
+    ) -> tuple[TurnResult, bool]:
+        """Capture → transcribe → think → speak; the shared body of a turn.
+
+        Returns ``(result, pending_idle)``. ``pending_idle`` is True only when
+        the turn succeeded and the state machine is still sitting in
+        SPEAKING — the caller decides whether to finalise with IDLE
+        (`voice_turn`) or, for ADR-015's follow-up window, leave it there so
+        the *next* call's own opening transition below reads
+        SPEAKING → LISTENING in the trace. Every other exit (recovery, empty
+        transcript) already reaches IDLE itself via `_recover`,
+        `_recover_after_partial_speech`, or `_reset_to_idle`, so
+        ``pending_idle`` is False for those.
         """
         if self._audio_in is None or self._stt is None:
             raise RuntimeError("voice_turn requires audio input and an STT adapter")
@@ -246,6 +326,7 @@ class Orchestrator:
             audio = self._audio_in.capture_utterance(
                 max_duration_ms=self._max_utterance_ms,
                 silence_timeout_ms=self._silence_timeout_ms,
+                speech_start_timeout_ms=speech_start_timeout_ms,
             )
             metrics.extra["audio_ms"] = audio.duration_ms
 
@@ -258,11 +339,14 @@ class Orchestrator:
             # failure, and section 4.1 requires every recoverable failure to
             # pass through ERROR on its way back to IDLE. The model is not
             # called — there is nothing to answer — but the state trace still
-            # records that the turn did not complete normally.
+            # records that the turn did not complete normally. This is also
+            # what a follow-up window with no speech in it looks like
+            # (ADR-015): the capture returns an empty buffer the same way a
+            # wake-word turn's does, and this path already returns to IDLE.
             if transcript.is_empty:
                 log_event(_log, "turn_skipped", reason="empty_transcript")
                 self._reset_to_idle()
-                return TurnResult(utterance="", response="", metrics=metrics)
+                return TurnResult(utterance="", response="", metrics=metrics), False
 
             utterance = transcript.text
             metrics.input_chars = chars(utterance)
@@ -273,19 +357,19 @@ class Orchestrator:
                     response = self._stream_turn(utterance, metrics, stream_fn)
                 except _StreamingTurnFailed as failed:
                     if failed.spoke_any:
-                        return self._recover_after_partial_speech(
+                        result = self._recover_after_partial_speech(
                             utterance, metrics, failed.original
                         )
-                    return self._recover(utterance, metrics, failed.original)
+                    else:
+                        result = self._recover(utterance, metrics, failed.original)
+                    return result, False
             else:
                 response = self._think(utterance, metrics)
                 self._speak(response, metrics)
         except PonzuError as exc:
-            return self._recover(utterance, metrics, exc)
+            return self._recover(utterance, metrics, exc), False
 
-        self._machine.transition(State.IDLE)
-        self._finish(metrics)
-        return TurnResult(utterance=utterance, response=response, metrics=metrics)
+        return TurnResult(utterance=utterance, response=response, metrics=metrics), True
 
     # ------------------------------------------------------------------
     # Wake-word loop
@@ -328,12 +412,61 @@ class Orchestrator:
         log_event(_log, "loop_stopped")
 
     def _on_wake(self, confidence: float | None) -> None:
+        """Run the wake-triggered turn, then chain ADR-015 follow-up turns.
+
+        The detector's callback runs synchronously on the detector's own
+        thread with its capture stream already closed (verified in
+        `WhisperWakeWord._process_window` / `KeyboardWakeWord._run`: the
+        callback fires only after the detector's own stream/read has
+        finished, and the detector does not touch the microphone again until
+        this method returns). A follow-up capture below therefore never
+        contends with the wake detector for the microphone — the same
+        property that already made the original wake-triggered turn safe.
+        """
         log_event(_log, "wake_detected", confidence=confidence)
-        # A turn must never kill the loop; voice_turn already converts
-        # recoverable failures into a TurnResult, and anything else is logged
-        # here so the detector thread survives to hear the next wake word.
+
+        speech_start_timeout_ms: int | None = None
+        follow_ups_remaining = _MAX_CONSECUTIVE_FOLLOW_UPS
+
+        while True:
+            result, pending_idle = self._safe_run_turn_pipeline(speech_start_timeout_ms)
+
+            should_continue = (
+                pending_idle
+                and self._machine.state is State.SPEAKING
+                and result.ok
+                and bool(result.utterance)
+                and self._follow_up_ms > 0
+                and follow_ups_remaining > 0
+            )
+
+            if not should_continue:
+                if pending_idle:
+                    self._machine.transition(State.IDLE)
+                    self._finish(result.metrics)
+                self._report_turn(result)
+                return
+
+            self._report_turn(result)
+            follow_ups_remaining -= 1
+            speech_start_timeout_ms = self._follow_up_ms
+            log_event(_log, "follow_up_window", remaining=follow_ups_remaining)
+            # Loop again without finalising IDLE above: `_run_turn_pipeline`'s
+            # own opening transition then reads SPEAKING → LISTENING directly
+            # (ADR-015's `_FOLLOW_UP_PATH`), rather than detouring through an
+            # IDLE that never really happened.
+
+    def _safe_run_turn_pipeline(
+        self, speech_start_timeout_ms: int | None
+    ) -> tuple[TurnResult, bool]:
+        """`_run_turn_pipeline`, converting any escaping exception to a result.
+
+        A turn must never kill the loop; `_run_turn_pipeline` already converts
+        recoverable failures into a `TurnResult`, and anything else is logged
+        here so the detector thread survives to hear the next wake word.
+        """
         try:
-            result = self.voice_turn()
+            return self._run_turn_pipeline(speech_start_timeout_ms)
         except Exception as exc:  # noqa: BLE001 - last line of defence for the loop
             # Exception type only, same as `_recover` below: this is not a
             # PonzuError, but the text/traceback still must not reach the log
@@ -347,7 +480,9 @@ class Orchestrator:
                 metrics=TurnMetrics(),
                 error=f"{type(exc).__name__}: {exc}",
             )
+            return result, False
 
+    def _report_turn(self, result: TurnResult) -> None:
         if self._turn_callback is not None:
             # A subscriber that raises must not take the loop down with it.
             try:
@@ -428,10 +563,15 @@ class Orchestrator:
                 first_audio_ms = _elapsed_ms(turn_started)
             self._audio_out.play(audio)  # type: ignore[union-attr]
 
+        stream_kwargs: dict[str, object] = {"timeout_s": self._llm_timeout_s}
+        # ADR-015: only offered when the adapter actually declares
+        # `on_thinking` -- see `_accepts_on_thinking`'s docstring for why a
+        # fake without it must not be forced to accept the kwarg.
+        if _accepts_on_thinking(stream_fn):
+            stream_kwargs["on_thinking"] = self._forward_thinking
+
         try:
-            for fragment in stream_fn(
-                self._context.build(utterance), timeout_s=self._llm_timeout_s
-            ):
+            for fragment in stream_fn(self._context.build(utterance), **stream_kwargs):
                 parts.append(fragment)
                 for sentence in splitter.feed(fragment):
                     _speak_sentence(sentence)

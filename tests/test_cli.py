@@ -28,6 +28,7 @@ class FakeOrchestrator:
         self.run_forever_error: Exception | None = None
         self.turn_callback = None
         self.state_callback = None
+        self.thinking_callback = None
 
     def text_turn(self, utterance: str, *, speak: bool = False) -> TurnResult:
         self.calls.append((utterance, speak))
@@ -47,6 +48,9 @@ class FakeOrchestrator:
 
     def on_state_change(self, callback) -> None:
         self.state_callback = callback
+
+    def on_thinking(self, callback) -> None:
+        self.thinking_callback = callback
 
     def run_forever(self) -> None:
         self.run_forever_calls += 1

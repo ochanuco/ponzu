@@ -73,7 +73,11 @@ class MicrophoneInput:
         return sd
 
     def capture_utterance(
-        self, *, max_duration_ms: int, silence_timeout_ms: int
+        self,
+        *,
+        max_duration_ms: int,
+        silence_timeout_ms: int,
+        speech_start_timeout_ms: int | None = None,
     ) -> AudioBuffer:
         """Record until speech ends or `max_duration_ms` elapses (base.py).
 
@@ -82,6 +86,11 @@ class MicrophoneInput:
         started. If speech never started, nothing was meaningfully captured
         (base.py: a recoverable outcome, not an error), so an empty buffer
         is returned rather than raw room-noise silence.
+
+        `speech_start_timeout_ms`, when given, overrides how long to wait for
+        speech to *begin* instead of `self._config.speech_start_timeout_ms` --
+        ADR-015's follow-up window passes `audio.follow_up_ms` here so a
+        follow-up capture gives up sooner than a fresh wake-word turn would.
         """
         sd = self._import_sounddevice()
 
@@ -102,7 +111,11 @@ class MicrophoneInput:
             dtype="int16",
             device=self._config.input_device,
         ) as stream:
-            start_timeout_ms = self._config.speech_start_timeout_ms
+            start_timeout_ms = (
+                speech_start_timeout_ms
+                if speech_start_timeout_ms is not None
+                else self._config.speech_start_timeout_ms
+            )
             started_at = time.monotonic()
             # Two clocks, and the deadline is whichever expires first.
             #

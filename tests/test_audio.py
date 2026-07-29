@@ -175,6 +175,7 @@ def _config(**overrides) -> AudioConfig:
         "max_utterance_ms": 10000,
         "silence_timeout_ms": 1200,
         "speech_start_timeout_ms": 2500,
+        "follow_up_ms": 4000,
     }
     base.update(overrides)
     return AudioConfig(**base)
@@ -392,6 +393,30 @@ def test_capture_gives_up_when_speech_never_starts(monkeypatch) -> None:
     # 600ms / 30ms chunks == 20 reads, not the 333 that max_duration would take.
     assert len(fake_sd.calls) == 20
     assert buffer.pcm == b""  # speech never started, so nothing is returned
+
+
+def test_speech_start_timeout_ms_override_wins_over_the_configured_default(
+    monkeypatch,
+) -> None:
+    """ADR-015: the follow-up window passes its own budget per call.
+
+    The configured default (2500ms here) would allow far more reads than the
+    override below -- proving the call-time value is what actually governed
+    the wait, not `AudioConfig.speech_start_timeout_ms`.
+    """
+    from ponzu.audio.capture import MicrophoneInput
+
+    fake_sd = _fake_input_sounddevice(lambda frames: _silent_pcm(frames))
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    mic = MicrophoneInput(_config(speech_start_timeout_ms=2500))
+    buffer = mic.capture_utterance(
+        max_duration_ms=10_000, silence_timeout_ms=1200, speech_start_timeout_ms=300
+    )
+
+    # 300ms / 30ms chunks == 10 reads, not the 84 the 2500ms default allows.
+    assert len(fake_sd.calls) == 10
+    assert buffer.pcm == b""
 
 
 def _stalled_sounddevice():

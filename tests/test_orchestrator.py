@@ -12,7 +12,7 @@ from ponzu.adapters import (
     ModelResponse,
     Transcript,
 )
-from ponzu.core.orchestrator import Orchestrator
+from ponzu.core.orchestrator import _MAX_CONSECUTIVE_FOLLOW_UPS, Orchestrator
 from ponzu.core.prompt import ConversationContext
 from ponzu.core.state import State
 from ponzu.wakeword import ManualWakeWord
@@ -60,15 +60,45 @@ class FakeStreamingLLM:
             yield fragment
 
 
+class FakeStreamingLLMWithThinking:
+    """A `LanguageModel` whose `generate_stream` also accepts `on_thinking`.
+
+    ADR-015. Distinct from `FakeStreamingLLM` above, which deliberately does
+    NOT accept the parameter -- that fake is what proves the orchestrator
+    never forces every adapter to support it.
+    """
+
+    def __init__(self, thinking: list[str], fragments: list[str]) -> None:
+        self.thinking = thinking
+        self.fragments = fragments
+
+    def generate_stream(self, messages, *, timeout_s=None, on_thinking=None):
+        if on_thinking is not None:
+            for fragment in self.thinking:
+                on_thinking(fragment)
+        yield from self.fragments
+
+
 class FakeSTT:
-    def __init__(self, text: str = "こんにちは", error: Exception | None = None):
-        self.text = text
+    def __init__(
+        self, text: str | list[str] = "こんにちは", error: Exception | None = None
+    ):
+        # A list lets a follow-up test give each successive `transcribe` call
+        # a different transcript (e.g. real speech, then silence); a plain
+        # string keeps every existing single-turn caller unchanged.
+        self._texts = [text] if isinstance(text, str) else list(text)
         self.error = error
+        self.calls = 0
 
     def transcribe(self, audio):
         if self.error is not None:
             raise self.error
-        return Transcript(text=self.text, language="ja", duration_ms=100)
+        # Repeats the last entry once exhausted, so a caller need not size the
+        # list to the exact number of calls a follow-up chain will make.
+        index = min(self.calls, len(self._texts) - 1)
+        text = self._texts[index]
+        self.calls += 1
+        return Transcript(text=text, language="ja", duration_ms=100)
 
 
 class FakeTTS:
@@ -87,9 +117,16 @@ class FakeMic:
     def __init__(self, pcm: bytes = b"\x00\x00" * 1600) -> None:
         self.pcm = pcm
         self.captures = 0
+        # One entry appended per call, so a test can assert the orchestrator
+        # passed `follow_up_ms` on a follow-up capture and `None` on the
+        # original wake-triggered one (ADR-015).
+        self.speech_start_timeout_calls: list[int | None] = []
 
-    def capture_utterance(self, *, max_duration_ms, silence_timeout_ms):
+    def capture_utterance(
+        self, *, max_duration_ms, silence_timeout_ms, speech_start_timeout_ms=None
+    ):
         self.captures += 1
+        self.speech_start_timeout_calls.append(speech_start_timeout_ms)
         return AudioBuffer(pcm=self.pcm, sample_rate=16000)
 
 
@@ -597,4 +634,207 @@ def test_loop_exits_when_detector_stops_on_its_own() -> None:
     orch.run_forever()  # must return, not hang
 
     assert detector.stopped >= 1
+    assert orch.state is State.IDLE
+
+
+# --------------------------------------------------------- visible reasoning
+# ADR-015: `generate_stream`'s `on_thinking` callback is what lets the CLI
+# print reasoning while the model is still producing it.
+
+
+def test_on_thinking_subscriber_receives_fragments_in_order() -> None:
+    llm = FakeStreamingLLMWithThinking(
+        thinking=["まず", "考えて", "みます"], fragments=["わかりました。"]
+    )
+    orch = Orchestrator(
+        llm=llm,
+        stt=FakeSTT("何か言って"),
+        tts=FakeTTS(),
+        audio_in=FakeMic(),
+        audio_out=FakeSpeaker(),
+    )
+    seen: list[str] = []
+    orch.on_thinking(seen.append)
+
+    result = orch.voice_turn()
+
+    assert result.ok
+    assert seen == ["まず", "考えて", "みます"]
+
+
+def test_on_thinking_with_no_subscriber_does_not_break_the_turn() -> None:
+    llm = FakeStreamingLLMWithThinking(thinking=["hmm"], fragments=["はい。"])
+    orch = Orchestrator(
+        llm=llm,
+        stt=FakeSTT("何か言って"),
+        tts=FakeTTS(),
+        audio_in=FakeMic(),
+        audio_out=FakeSpeaker(),
+    )
+    # No `on_thinking` subscription at all -- default behaviour must be
+    # unaffected by the feature existing.
+
+    result = orch.voice_turn()
+
+    assert result.ok
+    assert result.response == "はい。"
+
+
+def test_fake_llm_without_on_thinking_support_still_works() -> None:
+    # `FakeStreamingLLM` deliberately has no `on_thinking` parameter at all;
+    # the orchestrator must not force every adapter to accept the kwarg just
+    # because a subscriber is registered.
+    fragments = ["こんにちは。"]
+    orch = Orchestrator(
+        llm=FakeStreamingLLM(fragments),
+        stt=FakeSTT("何か言って"),
+        tts=FakeTTS(),
+        audio_in=FakeMic(),
+        audio_out=FakeSpeaker(),
+    )
+    orch.on_thinking(lambda _fragment: None)
+
+    result = orch.voice_turn()
+
+    assert result.ok
+    assert result.response == "こんにちは。"
+
+
+# --------------------------------------------------------- follow-up window
+# ADR-015: after speaking, a configured follow-up window keeps listening with
+# no wake word needed. Driven through `_on_wake` (as `test_wake_word_triggers_
+# a_turn` already does above) since that's where the chaining lives.
+
+
+def test_follow_up_after_success_runs_a_second_turn_with_no_wake_word() -> None:
+    detector = ManualWakeWord()
+    mic = FakeMic()
+    # Two real utterances, then silence -- the third capture ends the chain
+    # instead of running indefinitely, isolating "exactly one follow-up ran".
+    stt = FakeSTT(["最初の発話", "二回目の発話", "   "])
+    tts, speaker = FakeTTS(), FakeSpeaker()
+    orch = Orchestrator(
+        llm=FakeLLM("はい。"),
+        stt=stt,
+        tts=tts,
+        audio_in=mic,
+        audio_out=speaker,
+        wake_word=detector,
+        follow_up_ms=4000,
+    )
+    seen = trace(orch)
+    detector.on_detected(orch._on_wake)
+    detector.start()
+
+    detector.trigger(0.9)
+
+    # Wake-triggered turn + one follow-up turn that actually ran, then a third
+    # capture that found silence and stopped the chain.
+    assert mic.captures == 3
+    assert tts.spoken == ["はい。", "はい。"]
+    assert orch.state is State.IDLE
+    # The follow-up continues directly from SPEAKING -- not through an IDLE
+    # that never really happened (ADR-008's trace would otherwise lie).
+    pairs = list(itertools.pairwise(seen))
+    assert (State.SPEAKING, State.LISTENING) in pairs
+    # First capture uses the configured default (None here); the follow-up
+    # capture is given `follow_up_ms` instead of `speech_start_timeout_ms`.
+    assert mic.speech_start_timeout_calls[0] is None
+    assert mic.speech_start_timeout_calls[1] == 4000
+
+
+def test_follow_up_window_with_silence_returns_to_idle() -> None:
+    detector = ManualWakeWord()
+    mic = FakeMic()
+    # First capture: a real utterance. Second (the follow-up): nothing said.
+    stt = FakeSTT(["最初の発話", "   "])
+    tts, speaker = FakeTTS(), FakeSpeaker()
+    orch = Orchestrator(
+        llm=FakeLLM("はい。"),
+        stt=stt,
+        tts=tts,
+        audio_in=mic,
+        audio_out=speaker,
+        wake_word=detector,
+        follow_up_ms=4000,
+    )
+    detector.on_detected(orch._on_wake)
+    detector.start()
+
+    detector.trigger(0.9)
+
+    assert mic.captures == 2  # the original turn, plus one follow-up attempt
+    assert tts.spoken == ["はい。"]  # the follow-up never spoke -- nothing to say
+    assert orch.state is State.IDLE
+
+
+def test_follow_up_ms_zero_never_opens_a_window() -> None:
+    detector = ManualWakeWord()
+    mic = FakeMic()
+    orch = Orchestrator(
+        llm=FakeLLM("はい。"),
+        stt=FakeSTT("何か言って"),
+        tts=FakeTTS(),
+        audio_in=mic,
+        audio_out=FakeSpeaker(),
+        wake_word=detector,
+        follow_up_ms=0,  # the default -- explicit here for clarity
+    )
+    seen = trace(orch)
+    detector.on_detected(orch._on_wake)
+    detector.start()
+
+    detector.trigger(0.9)
+
+    assert mic.captures == 1
+    assert orch.state is State.IDLE
+    pairs = list(itertools.pairwise(seen))
+    assert (State.SPEAKING, State.LISTENING) not in pairs
+
+
+def test_failed_turn_does_not_open_a_follow_up_window() -> None:
+    detector = ManualWakeWord()
+    mic = FakeMic()
+    orch = Orchestrator(
+        llm=FakeLLM(error=AdapterUnavailable("ollama down")),
+        stt=FakeSTT("何か言って"),
+        tts=FakeTTS(),
+        audio_in=mic,
+        audio_out=FakeSpeaker(),
+        wake_word=detector,
+        follow_up_ms=4000,
+    )
+    detector.on_detected(orch._on_wake)
+    detector.start()
+
+    detector.trigger(0.9)
+
+    # A failed turn must not be mistaken for an invitation to keep listening.
+    assert mic.captures == 1
+    assert orch.state is State.IDLE
+
+
+def test_follow_up_chain_is_capped_at_max_consecutive_follow_ups() -> None:
+    detector = ManualWakeWord()
+    mic = FakeMic()
+    # A single string repeats forever (FakeSTT's "repeat the last entry"
+    # behaviour) -- room noise that never stops, in other words -- so nothing
+    # but the cap can end this chain.
+    orch = Orchestrator(
+        llm=FakeLLM("はい。"),
+        stt=FakeSTT("ずっと話し続けます"),
+        tts=FakeTTS(),
+        audio_in=mic,
+        audio_out=FakeSpeaker(),
+        wake_word=detector,
+        follow_up_ms=4000,
+    )
+    detector.on_detected(orch._on_wake)
+    detector.start()
+
+    detector.trigger(0.9)
+
+    # The wake-triggered turn, plus exactly the capped number of follow-ups --
+    # not one more, even though every capture "heard" more speech.
+    assert mic.captures == 1 + _MAX_CONSECUTIVE_FOLLOW_UPS
     assert orch.state is State.IDLE

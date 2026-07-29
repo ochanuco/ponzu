@@ -158,12 +158,23 @@ class AudioInput(Protocol):
     """Microphone capture and end-of-utterance handling (DESIGN section 4.3)."""
 
     def capture_utterance(
-        self, *, max_duration_ms: int, silence_timeout_ms: int
+        self,
+        *,
+        max_duration_ms: int,
+        silence_timeout_ms: int,
+        speech_start_timeout_ms: int | None = None,
     ) -> AudioBuffer:
         """Record until speech ends or ``max_duration_ms`` elapses.
 
         Returns an empty buffer if nothing was captured; that is a recoverable
         outcome, not an error.
+
+        ``speech_start_timeout_ms`` overrides how long to wait for speech to
+        *begin* before giving up; ``None`` (the default) means "use whatever
+        the adapter was configured with". ADR-015's follow-up window is why
+        this exists: it reuses the same "wait this long, then give up"
+        machinery with a shorter, separately-configured budget
+        (``audio.follow_up_ms``) instead of ``audio.speech_start_timeout_ms``.
         """
         ...
 
@@ -202,7 +213,11 @@ class LanguageModel(Protocol):
     ) -> ModelResponse: ...
 
     def generate_stream(
-        self, messages: Iterable[Message], *, timeout_s: float | None = None
+        self,
+        messages: Iterable[Message],
+        *,
+        timeout_s: float | None = None,
+        on_thinking: Callable[[str], None] | None = None,
     ) -> Iterator[str]:
         """Yield text fragments as the model produces them (ADR-014).
 
@@ -214,6 +229,10 @@ class LanguageModel(Protocol):
         Fragments are raw model output with no sentence structure imposed —
         splitting is the orchestrator's job, since where to break for speech is
         a presentation decision, not transport (ADR-005).
+
+        ``on_thinking`` receives reasoning fragments from backends that separate
+        them (ADR-015). They are never yielded: the iterator carries only what
+        may be spoken, so reasoning cannot reach the synthesiser by accident.
         """
         ...
 

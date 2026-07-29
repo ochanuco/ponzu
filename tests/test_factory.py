@@ -179,6 +179,8 @@ def test_build_orchestrator_voice_true_wires_every_adapter(default_config) -> No
     assert orchestrator._wake_word is not None
     assert orchestrator._max_utterance_ms == default_config.audio.max_utterance_ms
     assert orchestrator._silence_timeout_ms == default_config.audio.silence_timeout_ms
+    # ADR-015: the follow-up window is configured, not hard-coded.
+    assert orchestrator._follow_up_ms == default_config.audio.follow_up_ms
 
 
 # ---------------------------------------------------- no hardware/network touch

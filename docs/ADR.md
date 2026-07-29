@@ -644,3 +644,59 @@ What follows:
   records that `think: false` makes it leak reasoning into `content`, so the
   assistant would speak "Okay, the user said…" aloud.
 - DESIGN section 11's default-LLM entry, closed by ADR-012, is reopened.
+
+---
+
+## ADR-015: Follow-Up Window and Visible Reasoning
+
+- **Status:** Accepted
+- **Decision:** After speaking, the assistant keeps listening briefly so a
+  follow-up needs no second wake word. Separately, the model's reasoning is
+  shown on the terminal while it is being produced.
+
+### Context — follow-up
+
+Every turn required saying "ぽんず" again, because `SPEAKING` returned
+unconditionally to `IDLE` and only the wake gate could start a turn. That is
+wrong for conversation: the natural thing after an answer is to keep talking.
+
+### Context — visible reasoning
+
+ADR-014 measured that `qwen3:30b` spends ~99% of a turn producing `thinking`
+before the first character of `content` exists. The adapter deliberately drops
+those fragments so the assistant never speaks its reasoning aloud, but dropping
+them is why roughly ten seconds of every turn shows nothing but `…thinking`.
+
+The material to fill that silence already arrives; it was simply discarded.
+
+### Decision
+
+- `SPEAKING -> LISTENING` becomes a legal transition, taken when a follow-up
+  window is configured. If speech starts within the window a turn runs with no
+  wake word; if it does not, the assistant returns to `IDLE`.
+- The window reuses the existing `speech_start_timeout_ms` machinery — "wait
+  this long for speech to begin, then give up" is exactly the same question.
+- `generate_stream` gains an optional `on_thinking` callback. Reasoning
+  fragments go there; the iterator still yields only speakable `content`. The
+  adapter stays transport-only (ADR-005): it forwards what the backend sent and
+  interprets nothing.
+- The CLI prints reasoning to the terminal. It is **not** logged: DESIGN
+  section 7 excludes model output from logs, and reasoning is model output.
+  Printing to a terminal the user is already watching is a different act from
+  writing it to a file.
+
+### Consequences
+
+- ADR-008's transition table gains one edge. `SPEAKING -> LISTENING` is only
+  taken when the follow-up window is enabled, so the trace still distinguishes
+  a wake-word turn from a follow-up.
+- The follow-up window is a **false-trigger risk**: room noise measured above
+  the RMS threshold in practice, and during the window there is no wake word
+  standing between that noise and a turn. It is therefore short by default and
+  can be disabled with `0`.
+- A follow-up turn skips the gate entirely, so it does not pay the
+  transcription the gate would have done — follow-ups are cheaper, not just
+  more convenient.
+- Reasoning on screen is verbose (over 1,000 characters is normal). It is on by
+  default because an assistant that looks frozen for ten seconds is the worse
+  failure, and it is configurable.

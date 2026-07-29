@@ -157,4 +157,5 @@ def build_orchestrator(
         llm_timeout_s=config.llm.timeout_s,
         max_utterance_ms=config.audio.max_utterance_ms,
         silence_timeout_ms=config.audio.silence_timeout_ms,
+        follow_up_ms=config.audio.follow_up_ms,
     )

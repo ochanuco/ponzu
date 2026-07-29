@@ -57,7 +57,6 @@ def test_error_cannot_transition_to_anything_but_idle(target: State) -> None:
         (State.LISTENING, State.IDLE),
         (State.TRANSCRIBING, State.SPEAKING),
         (State.TRANSCRIBING, State.IDLE),
-        (State.SPEAKING, State.LISTENING),
     ],
 )
 def test_illegal_transitions_are_rejected(source: State, target: State) -> None:
@@ -96,3 +95,11 @@ def test_on_change_callback_receives_previous_and_new_state() -> None:
         (State.IDLE, State.LISTENING),
         (State.LISTENING, State.ERROR),
     ]
+
+
+def test_follow_up_transition_is_allowed() -> None:
+    # ADR-015: after speaking, a configured follow-up window returns to
+    # LISTENING so a second utterance needs no wake word.
+    machine = StateMachine(initial=State.SPEAKING)
+    machine.transition(State.LISTENING)
+    assert machine.state is State.LISTENING

@@ -98,6 +98,12 @@ audio:
   # Lower it and you start racing the user: they have to notice the assistant
   # woke before they begin talking, and 2.5s expired mid-reaction in practice.
   speech_start_timeout_ms: 5000
+  # ADR-015: after speaking, keep listening for this long with no wake word
+  # needed, so a follow-up doesn't require saying "ぽんず" again. Shorter than
+  # speech_start_timeout_ms because a follow-up already has the user's
+  # attention. This is a false-trigger risk (room noise crossing the RMS
+  # floor with no wake word in front of it), so `0` disables it entirely.
+  follow_up_ms: 4000
 
 privacy:
   persist_audio: false
@@ -109,3 +115,9 @@ logging:
   # default -- never raw transcripts, prompts, or audio.
   level: "info"
   format: "json"
+  # ADR-015: print the model's reasoning to the terminal as it streams, so
+  # the assistant doesn't look frozen during the ~99% of a turn qwen3:30b
+  # spends thinking before the first character of its answer (ADR-014).
+  # Never written to the log either way -- DESIGN section 7 excludes model
+  # output from logs, and reasoning is model output.
+  show_thinking: true

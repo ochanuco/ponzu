@@ -174,6 +174,17 @@ utterance that never begins would otherwise run the full `max_utterance_ms`.
 Ten seconds of nothing reads as a broken assistant, so `speech_start_timeout_ms`
 bounds the wait for speech to begin.
 
+```text
+capture_utterance(max_duration_ms, silence_timeout_ms,
+                  speech_start_timeout_ms=None) -> AudioBuffer
+```
+
+`speech_start_timeout_ms` is an optional per-call override of the configured
+default, falling back to it when omitted. ADR-015's follow-up window needs a
+different budget for "wait for speech to begin" than an ordinary turn does —
+that is the same question with a different answer, not a different mechanism,
+so it is a parameter rather than a second method.
+
 ### Recommended Runtime Format
 
 - Mono PCM
