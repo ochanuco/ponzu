@@ -114,4 +114,14 @@ Defaults, from DESIGN section 5.1 and SECURITY.md:
 
 ## License
 
-Not yet chosen (DESIGN section 11). Until one is added, no license is granted.
+MIT — see [`LICENSE`](LICENSE).
+
+Every runtime dependency is permissive (MIT, BSD-3-Clause, or Apache-2.0), and
+Ponzu talks to Ollama and VOICEVOX over HTTP as separate processes rather than
+linking against them, so neither engine's license propagates here.
+
+**Using the voices is a separate matter.** VOICEVOX character voices carry their
+own terms of use, which generally require crediting the character when you
+publish generated audio. That obligation follows the audio, not this code, and
+this license does not grant it — check the terms for the speaker you configure:
+<https://voicevox.hiroshiba.jp/term/>

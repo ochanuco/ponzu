@@ -506,12 +506,12 @@ Write and high-impact operations should require explicit confirmation.
 | STT backend | `faster-whisper`, default model size `small` | ADR-009 |
 | Default local LLM | `qwen3:30b` (Qwen3-30B-A3B); latency handled by streaming | ADR-012 |
 | VOICEVOX speaker | 冥鳴ひまり / ノーマル (style id 14) | section 5.1 |
+| License | MIT | `LICENSE` |
 
 ### Still Open
 
 - Packaging and process supervision
 - Short-term context retention policy
-- License
 
 ### Measured Latency
 
