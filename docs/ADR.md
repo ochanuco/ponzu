@@ -222,11 +222,36 @@ IDLE
  -> IDLE
 ```
 
+### Text Transition
+
+`ponzu chat` (ADR-011) takes typed input, so no audio is captured and nothing is
+transcribed:
+
+```text
+IDLE
+ -> THINKING
+ -> SPEAKING   (only when speech output is requested)
+ -> IDLE
+```
+
+`IDLE -> THINKING` and `THINKING -> IDLE` are therefore legal transitions.
+
+The alternative — routing text turns through `LISTENING` and `TRANSCRIBING`
+anyway — was rejected. Those states would be a lie in the log trace, and the
+state trace is the primary evidence for diagnosing a stuck assistant.
+
+### Recovery Transitions
+
+- Any state may transition to `ERROR`.
+- `ERROR` may only transition to `IDLE`.
+
 ### Consequences
 
 - Cancellation and timeout behavior can be implemented consistently.
 - UI or status indicators can be added later.
 - Failures can return safely to `IDLE`.
+- The transition table is explicit and closed: a transition not listed above is
+  a programming error and raises, rather than silently corrupting the trace.
 
 ---
 

@@ -42,11 +42,21 @@ _PRIMARY_PATH: tuple[State, ...] = (
     State.IDLE,
 )
 
+# ADR-008 text transition, used by `ponzu chat`: typed input means nothing is
+# captured or transcribed, so those two states are skipped rather than faked.
+# THINKING -> IDLE covers a text turn that produces no spoken output.
+_TEXT_PATH: tuple[State, ...] = (
+    State.IDLE,
+    State.THINKING,
+    State.IDLE,
+)
+
 
 def _build_allowed() -> dict[State, frozenset[State]]:
     allowed: dict[State, set[State]] = {state: set() for state in State}
-    for src, dst in pairwise(_PRIMARY_PATH):
-        allowed[src].add(dst)
+    for path in (_PRIMARY_PATH, _TEXT_PATH):
+        for src, dst in pairwise(path):
+            allowed[src].add(dst)
     for state in State:
         if state is not State.ERROR:
             allowed[state].add(State.ERROR)

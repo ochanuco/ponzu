@@ -51,14 +51,12 @@ def test_error_cannot_transition_to_anything_but_idle(target: State) -> None:
     ("source", "target"),
     [
         (State.IDLE, State.TRANSCRIBING),
-        (State.IDLE, State.THINKING),
         (State.IDLE, State.SPEAKING),
         (State.LISTENING, State.THINKING),
         (State.LISTENING, State.SPEAKING),
         (State.LISTENING, State.IDLE),
         (State.TRANSCRIBING, State.SPEAKING),
         (State.TRANSCRIBING, State.IDLE),
-        (State.THINKING, State.IDLE),
         (State.SPEAKING, State.LISTENING),
     ],
 )
@@ -68,6 +66,22 @@ def test_illegal_transitions_are_rejected(source: State, target: State) -> None:
         machine.transition(target)
     # A rejected transition must not mutate state.
     assert machine.state == source
+
+
+@pytest.mark.parametrize(
+    ("source", "target"),
+    [
+        (State.IDLE, State.THINKING),
+        (State.THINKING, State.IDLE),
+    ],
+)
+def test_text_path_transitions_are_allowed(source: State, target: State) -> None:
+    # ADR-008 "Text Transition": `ponzu chat` takes typed input, so LISTENING and
+    # TRANSCRIBING are skipped rather than faked. THINKING -> IDLE covers a text
+    # turn with no spoken output.
+    machine = StateMachine(initial=source)
+    machine.transition(target)
+    assert machine.state == target
 
 
 def test_on_change_callback_receives_previous_and_new_state() -> None:
