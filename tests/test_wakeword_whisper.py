@@ -473,3 +473,45 @@ def test_phrase_itself_matches_even_if_absent_from_variants() -> None:
     )
 
     assert detector._matches(Transcript(text="ぽんず", confidence=0.9)) is True
+
+
+def test_wake_gate_event_names_audio_and_transcribe_times_apart(monkeypatch, caplog):
+    """DESIGN section 7 fixes the log contract; these two fields once collided.
+
+    `wake_gate` and `stt_result` both carried a `duration_ms` on adjacent
+    lines, meaning transcription wall clock in one and audio length in the
+    other. Anyone reading the log compared them as if they were the same
+    quantity.
+    """
+    import logging
+
+    from ponzu.wakeword import whisper_gate
+
+    fake_sd = _fake_input_sounddevice(_loud_then_silent_reader(3))
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    transcribed = threading.Event()
+    FakeRecognizer, _ = _fake_recognizer_factory(
+        [Transcript(text="ぽんず", confidence=0.9)], on_transcribe=transcribed.set
+    )
+    monkeypatch.setattr(whisper_gate, "WhisperRecognizer", FakeRecognizer)
+
+    detector = whisper_gate.WhisperWakeWord(_wake_config(), _audio_config())
+    detector.on_detected(lambda confidence: None)
+
+    with caplog.at_level(logging.INFO):
+        detector.start()
+        assert transcribed.wait(timeout=_WAIT_S), "transcribe() was never called"
+        detector.stop()
+
+    events = [
+        r.__dict__["ponzu_fields"]
+        for r in caplog.records
+        if r.__dict__.get("ponzu_event") == "wake_gate"
+    ]
+    assert events, "no wake_gate event was logged"
+    fields = events[0]
+    assert "duration_ms" not in fields
+    assert set(fields) == {"transcribe_ms", "audio_ms", "chars", "matched"}
+    # And still no transcript text anywhere in the record (DESIGN section 7).
+    assert "ぽんず" not in caplog.text

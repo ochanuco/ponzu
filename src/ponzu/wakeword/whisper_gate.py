@@ -287,19 +287,23 @@ class WhisperWakeWord:
         )
         start = time.monotonic()
         transcript = self._recognizer.transcribe(audio)
-        duration_ms = int((time.monotonic() - start) * 1000)
+        transcribe_ms = int((time.monotonic() - start) * 1000)
 
         matched = self._matches(transcript)
 
-        # DESIGN section 7: duration and a character count only, never the
+        # DESIGN section 7: durations and a character count only, never the
         # transcript itself. `WhisperRecognizer.transcribe` already logs its
-        # own `stt_result` event with `chars`; this event additionally
-        # records the gate's match outcome, which the STT layer has no
-        # reason to know about.
+        # own `stt_result` event; this one adds the gate's match outcome,
+        # which the STT layer has no reason to know about.
+        #
+        # `transcribe_ms` and `audio_ms` are named apart on purpose. Both this
+        # event and `stt_result` used to carry a `duration_ms`, meaning wall
+        # clock here and audio length there, on adjacent log lines.
         log_event(
             self._logger,
             "wake_gate",
-            duration_ms=duration_ms,
+            transcribe_ms=transcribe_ms,
+            audio_ms=audio.duration_ms,
             chars=chars(transcript.text),
             matched=matched,
         )
