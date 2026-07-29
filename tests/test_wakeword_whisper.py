@@ -573,3 +573,48 @@ def test_capture_thread_failure_is_logged_before_the_thread_dies(monkeypatch, ca
     assert "wake_gate_failed" in events
     # Type only, never the message (DESIGN section 7).
     assert "device went away" not in caplog.text
+
+
+def test_long_silence_before_speech_does_not_truncate_the_window(monkeypatch) -> None:
+    """The window budget must measure the window, not the wait before it.
+
+    Regression: the wall-clock guard was referenced from the start of the
+    capture loop, but that loop idles in silence until somebody talks. After
+    any real amount of quiet the budget was already spent, so the first speech
+    chunk closed the window immediately -- 30 ms of audio, nothing
+    transcribable, and a gate that never fired again after the first turn.
+    """
+    from ponzu.wakeword import whisper_gate
+
+    # 40 silent chunks stand in for a quiet room, then speech. Real time is not
+    # simulated; what matters is that silence precedes speech in the stream and
+    # that the guard is keyed off speech, not off loop entry.
+    calls = {"n": 0}
+
+    def reader(frames: int) -> bytes:
+        calls["n"] += 1
+        if calls["n"] <= 40:
+            return _silent_pcm(frames)
+        if calls["n"] <= 45:
+            return _loud_pcm(frames)
+        return _silent_pcm(frames)
+
+    fake_sd = _fake_input_sounddevice(reader)
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    transcribed = threading.Event()
+    FakeRecognizer, received = _fake_recognizer_factory(
+        [Transcript(text="ぽんず", confidence=0.9)], on_transcribe=transcribed.set
+    )
+    monkeypatch.setattr(whisper_gate, "WhisperRecognizer", FakeRecognizer)
+
+    detector = whisper_gate.WhisperWakeWord(
+        _wake_config(silence_timeout_ms=300), _audio_config()
+    )
+    detector.on_detected(lambda confidence: None)
+    detector.start()
+    assert transcribed.wait(timeout=_WAIT_S), "transcribe() was never called"
+    detector.stop()
+
+    # 5 loud chunks + 10 chunks of trailing silence == 450ms, not one chunk.
+    assert received[0].duration_ms == 450

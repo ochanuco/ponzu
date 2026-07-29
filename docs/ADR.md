@@ -421,10 +421,12 @@ before hearing *something*, which is not the same as how long generation takes.
 
 - `llm.model` stays `qwen3:30b`; `llm.timeout_s` stays sized for the ~27 s
   cold load rather than the ~4-5 s steady state.
-- Perceived latency is a **streaming** problem (ROADMAP Phase 2: streaming LLM
-  output, sentence-level TTS). Emitting the first sentence to VOICEVOX while
-  the rest is still generating should cut time-to-first-audio to 1-2 s without
-  touching model choice.
+- ~~Perceived latency is a **streaming** problem.~~ **Superseded by ADR-014's
+  measurements: this was wrong.** Streaming was implemented and it moved
+  time-to-first-audio by 0.16 s, because `qwen3:30b` emits its entire reasoning
+  trace before the first character of `content`. Nothing downstream can start
+  earlier than reasoning finishes, so the latency is a *model* property after
+  all — the opposite of what this ADR concluded. See ADR-014.
 - Reasoning stays enabled. ADR-009's note holds: Ollama's `think: false` makes
   this model leak its reasoning into `message.content`.
 - The persona's response-length constraint (DESIGN section 4.6) is
@@ -533,3 +535,95 @@ fire.
 a floor against garbage, not a discriminating threshold, and the default is set
 below the observed band rather than at the 0.6 the original DESIGN example
 suggested. Do not read it as a probability.
+
+---
+
+## ADR-014: Streaming Response with Sentence-Level Synthesis
+
+- **Status:** Accepted
+- **Decision:** `ponzu start` streams the model's answer and synthesises it one
+  sentence at a time, so speech begins before generation finishes.
+
+### Context
+
+Measured on a live turn, wake word to the reply becoming audible was ~19 s:
+
+| Stage | Time |
+| --- | --- |
+| User speaking | 3.9 s |
+| Trailing silence before capture ends | 1.2 s |
+| STT | 1.3 s |
+| **LLM** | **13.6 s** |
+| Synthesis | 1.1 s |
+
+The LLM is roughly 70% of the wait, and essentially all of it is spent waiting
+for the *last* token of an answer whose first sentence was ready far earlier.
+ADR-012 already concluded that this is a streaming problem rather than a
+model-size problem; this is that work.
+
+### Decision
+
+- `LanguageModel` gains `generate_stream`. It is **additive**: `generate`
+  stays, and `ponzu chat` keeps using it. Only the voice loop streams.
+  Collapsing both into one iterator-returning method would have rewritten every
+  existing call site, adapter, and test to buy nothing for the text path.
+- The orchestrator accumulates fragments and cuts a sentence on `。`, `！`, `？`
+  or a newline. Simple and predictable, and it fits the persona, which already
+  instructs replies of two to three sentences (DESIGN section 4.6).
+- Sentences are synthesised and played in order while generation continues.
+- A failure part-way through **lets queued audio finish playing** before
+  transitioning to `ERROR`. Cutting the assistant off mid-word to report a
+  backend failure is worse than letting it complete the sentence it already
+  committed to.
+
+### Consequences
+
+- Time to first audio becomes a function of the first sentence, not the whole
+  answer.
+- `SPEAKING` is now entered while the model is still generating, so the state
+  no longer means "generation finished". ADR-008's table is unchanged —
+  `THINKING -> SPEAKING` was already legal — but the trace reads differently.
+- `AudioOutput` must play queued clips back to back (DESIGN section 4.8).
+  Overlapping assistant speech was already forbidden; now the sequencing is
+  load-bearing rather than incidental.
+- `TurnMetrics.tts_ms` becomes the sum of per-sentence synthesis, and a new
+  first-audio measurement is what actually reflects the improvement.
+- Barge-in remains out of scope (ROADMAP Phase 2, separate).
+
+### Measured after implementing it
+
+Streaming shipped, and then measured against `qwen3:30b`:
+
+```text
+first content character : 28.86 s
+full answer             : 29.02 s   (difference: 0.16 s)
+```
+
+Broken down by field, on a warm model:
+
+| | Starts | Ends | Output |
+| --- | --- | --- | --- |
+| `thinking` | 0.22 s | 5.37 s | 1,184 chars |
+| `content` | 5.44 s | — | 27 chars |
+
+Reasoning is ~99% of the wait and it **completes before the first character of
+`content` exists**. Streaming `content` therefore cannot start speech any
+earlier — there is nothing to stream until the model has already finished
+thinking. The answer itself is 27 characters, so there is no meaningful
+generation time left to overlap with.
+
+This refutes the premise this ADR was written on, and ADR-012's conclusion that
+latency was a streaming problem rather than a model-size problem. Both were
+reasoned from the shape of the pipeline instead of measured.
+
+What follows:
+
+- The streaming implementation is kept. It is correct, tested, and becomes the
+  win it was meant to be the moment the model emits `content` progressively.
+  It is simply not sufficient on its own.
+- The lever that remains is the **model**. A non-reasoning model would start
+  emitting `content` immediately, at which point streaming does what ADR-014
+  claimed. Disabling reasoning on `qwen3:30b` is not that option: ADR-009
+  records that `think: false` makes it leak reasoning into `content`, so the
+  assistant would speak "Okay, the user said…" aloud.
+- DESIGN section 11's default-LLM entry, closed by ADR-012, is reopened.

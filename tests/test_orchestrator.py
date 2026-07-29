@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import logging
 
 import pytest
@@ -12,6 +13,7 @@ from ponzu.adapters import (
     Transcript,
 )
 from ponzu.core.orchestrator import Orchestrator
+from ponzu.core.prompt import ConversationContext
 from ponzu.core.state import State
 from ponzu.wakeword import ManualWakeWord
 
@@ -27,6 +29,35 @@ class FakeLLM:
         if self.error is not None:
             raise self.error
         return ModelResponse(text=self.text, model="fake", duration_ms=1)
+
+
+class FakeStreamingLLM:
+    """A `LanguageModel` that exposes `generate_stream` but not `generate`.
+
+    ADR-014: only the voice loop streams, so this fake exists to prove the
+    orchestrator picks the streaming path when it's offered, and never falls
+    back to a whole-answer call it doesn't have.
+    """
+
+    def __init__(
+        self,
+        fragments: list[str],
+        *,
+        fail_before: int | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.fragments = fragments
+        # If set, raise `error` instead of yielding fragments[fail_before:].
+        self.fail_before = fail_before
+        self.error = error
+        self.calls: list[list] = []
+
+    def generate_stream(self, messages, *, timeout_s=None):
+        self.calls.append(list(messages))
+        for i, fragment in enumerate(self.fragments):
+            if self.fail_before is not None and i == self.fail_before:
+                raise self.error
+            yield fragment
 
 
 class FakeSTT:
@@ -259,6 +290,200 @@ def test_voice_turn_without_audio_adapters_is_a_wiring_bug() -> None:
     # wrong, which should be loud rather than logged and swallowed.
     with pytest.raises(RuntimeError):
         orch.voice_turn()
+
+
+# ------------------------------------------------------ streaming voice turns
+# ADR-014: `ponzu start` speaks the first sentence while the model is still
+# generating. Fragments below deliberately don't align with sentence
+# boundaries, to prove `_SentenceSplitter` reassembles across them.
+
+
+def test_streaming_turn_speaks_each_sentence_in_order_as_it_completes() -> None:
+    fragments = ["こんに", "ちは。二番", "目の文です", "。三番目でした", "。"]
+    llm = FakeStreamingLLM(fragments)
+    tts, speaker = FakeTTS(), FakeSpeaker()
+    orch = Orchestrator(
+        llm=llm,
+        stt=FakeSTT("何か言って"),
+        tts=tts,
+        audio_in=FakeMic(),
+        audio_out=speaker,
+    )
+    seen = trace(orch)
+
+    result = orch.voice_turn()
+
+    assert result.ok
+    assert tts.spoken == ["こんにちは。", "二番目の文です。", "三番目でした。"]
+    assert len(speaker.played) == 3
+    # Exactly one THINKING -> SPEAKING transition for the whole turn, not one
+    # per sentence -- the transition table forbids SPEAKING -> SPEAKING.
+    assert seen.count(State.SPEAKING) == 1
+    assert seen == [
+        State.LISTENING,
+        State.TRANSCRIBING,
+        State.THINKING,
+        State.SPEAKING,
+        State.IDLE,
+    ]
+
+
+def test_streaming_turn_records_the_full_reply_not_per_sentence() -> None:
+    fragments = ["こんに", "ちは。二番", "目の文です", "。三番目でした", "。"]
+    context = ConversationContext()
+    orch = Orchestrator(
+        llm=FakeStreamingLLM(fragments),
+        context=context,
+        stt=FakeSTT("何か言って"),
+        tts=FakeTTS(),
+        audio_in=FakeMic(),
+        audio_out=FakeSpeaker(),
+    )
+
+    orch.voice_turn()
+
+    # `build` returns [system, *history, user]; the assistant message just
+    # before the trailing user probe is what got recorded for the turn.
+    messages = context.build("次の質問")
+    assert messages[-2].role == "assistant"
+    assert messages[-2].content == "こんにちは。二番目の文です。三番目でした。"
+
+
+def test_streaming_turn_with_no_terminator_still_speaks_the_remainder() -> None:
+    fragments = ["ただの続き", "だけで終わります"]
+    tts, speaker = FakeTTS(), FakeSpeaker()
+    orch = Orchestrator(
+        llm=FakeStreamingLLM(fragments),
+        stt=FakeSTT("何か言って"),
+        tts=tts,
+        audio_in=FakeMic(),
+        audio_out=speaker,
+    )
+
+    result = orch.voice_turn()
+
+    assert result.ok
+    assert tts.spoken == ["ただの続きだけで終わります"]
+    assert len(speaker.played) == 1
+
+
+def test_streaming_turn_first_audio_ms_is_present_and_before_llm_ms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real time.sleep is never used here; a strictly-increasing fake clock
+    # guarantees first_audio_ms (recorded mid-stream, before the third
+    # sentence is even generated) is smaller than llm_ms (recorded once the
+    # whole stream is exhausted), without depending on wall-clock timing.
+    counter = itertools.count()
+    monkeypatch.setattr(
+        "ponzu.core.orchestrator.time.monotonic", lambda: float(next(counter))
+    )
+
+    fragments = ["一文目。", "二文目。", "三文目。"]
+    orch = Orchestrator(
+        llm=FakeStreamingLLM(fragments),
+        stt=FakeSTT("何か言って"),
+        tts=FakeTTS(),
+        audio_in=FakeMic(),
+        audio_out=FakeSpeaker(),
+    )
+
+    result = orch.voice_turn()
+
+    assert result.ok
+    first_audio_ms = result.metrics.extra["first_audio_ms"]
+    assert first_audio_ms >= 0
+    assert first_audio_ms < result.metrics.llm_ms
+
+
+def test_streaming_turn_falls_back_to_generate_when_llm_has_no_generate_stream() -> (
+    None
+):
+    assert not hasattr(FakeLLM(), "generate_stream")
+    tts, speaker = FakeTTS(), FakeSpeaker()
+    orch = Orchestrator(
+        llm=FakeLLM("わかりません。"),
+        stt=FakeSTT("いま何時"),
+        tts=tts,
+        audio_in=FakeMic(),
+        audio_out=speaker,
+    )
+
+    result = orch.voice_turn()
+
+    assert result.ok
+    assert tts.spoken == ["わかりません。"]
+    assert orch.state is State.IDLE
+
+
+def test_streaming_turn_mid_stream_failure_speaks_queued_audio_then_errors() -> None:
+    fragments = ["一文目。", "二文目。", "三文目。"]
+    llm = FakeStreamingLLM(
+        fragments, fail_before=2, error=AdapterUnavailable("ollama died mid-stream")
+    )
+    tts, speaker = FakeTTS(), FakeSpeaker()
+    orch = Orchestrator(
+        llm=llm,
+        stt=FakeSTT("何か言って"),
+        tts=tts,
+        audio_in=FakeMic(),
+        audio_out=speaker,
+    )
+    seen = trace(orch)
+
+    result = orch.voice_turn()
+
+    # The two sentences already committed to must finish; the third, which
+    # never arrived, obviously does not.
+    assert tts.spoken == ["一文目。", "二文目。"]
+    assert len(speaker.played) == 2
+    assert not result.ok
+    assert "AdapterUnavailable" in result.error
+    assert orch.state is State.IDLE
+    # ADR-014: cutting the assistant off mid-sentence to report the failure
+    # would be worse than letting what's already queued finish.
+    assert speaker.cancels == 0
+    assert seen == [
+        State.LISTENING,
+        State.TRANSCRIBING,
+        State.THINKING,
+        State.SPEAKING,
+        State.ERROR,
+        State.IDLE,
+    ]
+
+
+def test_streaming_turn_failure_before_first_sentence_uses_normal_recovery() -> None:
+    # Nothing was ever spoken, so this must behave exactly like the existing
+    # non-streaming recovery path -- including calling cancel().
+    llm = FakeStreamingLLM(
+        ["何か話す前に壊れます"],
+        fail_before=0,
+        error=AdapterTimeout("ollama stalled"),
+    )
+    speaker = FakeSpeaker()
+    orch = Orchestrator(
+        llm=llm,
+        stt=FakeSTT("何か言って"),
+        tts=FakeTTS(),
+        audio_in=FakeMic(),
+        audio_out=speaker,
+    )
+    seen = trace(orch)
+
+    result = orch.voice_turn()
+
+    assert not result.ok
+    assert "AdapterTimeout" in result.error
+    assert orch.state is State.IDLE
+    assert speaker.cancels >= 1
+    assert seen == [
+        State.LISTENING,
+        State.TRANSCRIBING,
+        State.THINKING,
+        State.ERROR,
+        State.IDLE,
+    ]
 
 
 # ------------------------------------------------------------------- looping

@@ -300,6 +300,10 @@ All voice settings should be user configuration, not hard-coded.
 - Report completion
 - Support cancellation
 - Prevent overlapping assistant speech
+- Play a sequence of clips back to back without a gap between them
+
+Sentence-level synthesis (ADR-014) hands playback one clip at a time while the
+model is still generating, so clips must queue rather than overlap or race.
 
 ### Future Capability
 
@@ -522,12 +526,14 @@ Write and high-impact operations should require explicit confirmation.
 | Menu bar UI versus CLI-only MVP | CLI-only for the MVP | ADR-011 |
 | Wake-word engine | Substitute engine initially, behind a stable interface | ADR-010 |
 | STT backend | `faster-whisper`, default model size `small` | ADR-009 |
-| Default local LLM | `qwen3:30b` (Qwen3-30B-A3B); latency handled by streaming | ADR-012 |
+| ~~Default local LLM~~ | reopened — ADR-012's reasoning was refuted by ADR-014's measurements | ADR-014 |
 | VOICEVOX speaker | 冥鳴ひまり / ノーマル (style id 14) | section 5.1 |
 | License | MIT | `LICENSE` |
 
 ### Still Open
 
+- Default local LLM. A reasoning model spends ~99% of a turn thinking before
+  emitting any answer, which streaming cannot hide (ADR-014).
 - Packaging and process supervision
 - Short-term context retention policy
 

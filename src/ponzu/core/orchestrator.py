@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from ponzu.adapters import (
@@ -34,9 +34,102 @@ __all__ = ["Orchestrator", "TurnResult"]
 
 _log = logging.getLogger(__name__)
 
+# ADR-014: terminators that always cut a sentence immediately, regardless of
+# what follows. Japanese prose has no "3.5"-style ambiguity, so 。！？ (and a
+# bare newline, which separates rather than terminates) never need lookahead.
+_JA_TERMINATORS = "。！？"
+# ASCII terminators only cut when followed by whitespace or the stream ends.
+# `.` immediately followed by a non-space character (as in "3.5") is left
+# alone -- see `_SentenceSplitter._find_cut` below.
+_ASCII_TERMINATORS = ".!?"
+
 
 def _elapsed_ms(since: float) -> int:
     return int((time.monotonic() - since) * 1000)
+
+
+@dataclass(frozen=True, slots=True)
+class _Cut:
+    """A sentence boundary found in `_SentenceSplitter`'s buffer.
+
+    `end` is where the emitted sentence stops (terminator included for a
+    punctuation cut, excluded for a bare newline); `skip` is where the next
+    sentence starts scanning from, which skips the newline itself so it is
+    never attached to either side.
+    """
+
+    end: int
+    skip: int
+
+
+class _SentenceSplitter:
+    """Cuts complete sentences out of streamed text fragments (ADR-014).
+
+    Fed one model fragment at a time; returns whichever sentences became
+    complete as a result. An ASCII terminator sitting at the very end of the
+    buffer is ambiguous -- "3." could be the end of a sentence or the start of
+    "3.5" -- so it is left pending until either more text arrives (revealing
+    what follows) or `flush()` is called at the end of the stream.
+    """
+
+    def __init__(self) -> None:
+        self._buffer = ""
+
+    def feed(self, fragment: str) -> list[str]:
+        self._buffer += fragment
+        sentences: list[str] = []
+        while True:
+            cut = self._find_cut()
+            if cut is None:
+                break
+            sentence, remainder = self._buffer[: cut.end], self._buffer[cut.skip :]
+            # A run of consecutive newlines (or a newline right at the start of
+            # the buffer) would otherwise emit an empty "sentence".
+            if sentence:
+                sentences.append(sentence)
+            self._buffer = remainder.lstrip(" \t")
+        return sentences
+
+    def flush(self) -> str:
+        """Return and clear whatever is left when the stream has ended.
+
+        Covers both an answer with no terminator at all, and a trailing ASCII
+        terminator that never resolved because no more text ever arrived.
+        """
+        remainder, self._buffer = self._buffer, ""
+        return remainder
+
+    def _find_cut(self) -> _Cut | None:
+        buf = self._buffer
+        for i, ch in enumerate(buf):
+            if ch in _JA_TERMINATORS:
+                return _Cut(end=i + 1, skip=i + 1)
+            if ch == "\n":
+                return _Cut(end=i, skip=i + 1)
+            if ch in _ASCII_TERMINATORS:
+                if i + 1 >= len(buf):
+                    # Could still turn into "3.5" once more text arrives --
+                    # wait rather than guessing.
+                    return None
+                if buf[i + 1].isspace():
+                    return _Cut(end=i + 1, skip=i + 1)
+                # Followed directly by a non-space character (a digit in
+                # "3.5"): not a boundary, keep scanning past it.
+        return None
+
+
+class _StreamingTurnFailed(Exception):
+    """Internal control-flow signal from `_stream_turn` to `voice_turn`.
+
+    Not a `PonzuError`: it never leaves the orchestrator. It exists only to
+    carry whether any sentence had already been spoken, which decides how the
+    turn recovers (ADR-014: audio already queued must finish before erroring).
+    """
+
+    def __init__(self, original: PonzuError, *, spoke_any: bool) -> None:
+        super().__init__(str(original))
+        self.original = original
+        self.spoke_any = spoke_any
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,8 +266,20 @@ class Orchestrator:
 
             utterance = transcript.text
             metrics.input_chars = chars(utterance)
-            response = self._think(utterance, metrics)
-            self._speak(response, metrics)
+
+            stream_fn = self._stream_capable()
+            if stream_fn is not None:
+                try:
+                    response = self._stream_turn(utterance, metrics, stream_fn)
+                except _StreamingTurnFailed as failed:
+                    if failed.spoke_any:
+                        return self._recover_after_partial_speech(
+                            utterance, metrics, failed.original
+                        )
+                    return self._recover(utterance, metrics, failed.original)
+            else:
+                response = self._think(utterance, metrics)
+                self._speak(response, metrics)
         except PonzuError as exc:
             return self._recover(utterance, metrics, exc)
 
@@ -274,6 +379,83 @@ class Orchestrator:
         metrics.tts_ms = _elapsed_ms(started)
         self._audio_out.play(audio)
 
+    def _stream_capable(self) -> Callable[..., Iterable[str]] | None:
+        """The streaming path is only available with both TTS and playback.
+
+        Mirrors `_speak`'s existing no-op-without-adapters behaviour: a turn
+        wired without TTS/audio output falls back to `_think`, which also
+        skips speaking entirely.
+        """
+        if self._tts is None or self._audio_out is None:
+            return None
+        stream_fn = getattr(self._llm, "generate_stream", None)
+        return stream_fn if callable(stream_fn) else None
+
+    def _stream_turn(
+        self,
+        utterance: str,
+        metrics: TurnMetrics,
+        stream_fn: Callable[..., Iterable[str]],
+    ) -> str:
+        """ADR-014: synthesize and speak sentences while generation continues.
+
+        `THINKING -> SPEAKING` fires exactly once, on the first sentence --
+        the transition table forbids `SPEAKING -> SPEAKING`, so every later
+        sentence is synthesised and played without a further state change.
+        On failure, `voice_turn` decides how to recover based on whether any
+        sentence was already spoken (`_StreamingTurnFailed.spoke_any`).
+        """
+        assert self._tts is not None
+        assert self._audio_out is not None
+
+        self._machine.transition(State.THINKING)
+        turn_started = time.monotonic()
+        splitter = _SentenceSplitter()
+        parts: list[str] = []
+        spoken = False
+        tts_ms_total = 0
+        first_audio_ms: int | None = None
+
+        def _speak_sentence(sentence: str) -> None:
+            nonlocal spoken, tts_ms_total, first_audio_ms
+            if not spoken:
+                self._machine.transition(State.SPEAKING)
+                spoken = True
+            tts_started = time.monotonic()
+            audio = self._tts.synthesize(sentence)  # type: ignore[union-attr]
+            tts_ms_total += _elapsed_ms(tts_started)
+            if first_audio_ms is None:
+                first_audio_ms = _elapsed_ms(turn_started)
+            self._audio_out.play(audio)  # type: ignore[union-attr]
+
+        try:
+            for fragment in stream_fn(
+                self._context.build(utterance), timeout_s=self._llm_timeout_s
+            ):
+                parts.append(fragment)
+                for sentence in splitter.feed(fragment):
+                    _speak_sentence(sentence)
+            # The LLM stream itself is done at this point; whatever remains is
+            # flushed below without generation still running behind it.
+            metrics.llm_ms = _elapsed_ms(turn_started)
+
+            remainder = splitter.flush()
+            if remainder:
+                _speak_sentence(remainder)
+        except PonzuError as exc:
+            metrics.tts_ms = tts_ms_total
+            if first_audio_ms is not None:
+                metrics.extra["first_audio_ms"] = first_audio_ms
+            raise _StreamingTurnFailed(exc, spoke_any=spoken) from exc
+
+        metrics.tts_ms = tts_ms_total
+        if first_audio_ms is not None:
+            metrics.extra["first_audio_ms"] = first_audio_ms
+        full_reply = "".join(parts)
+        metrics.output_chars = chars(full_reply)
+        self._context.record(utterance, full_reply)
+        return full_reply
+
     # ------------------------------------------------------------------
     # Recovery
     # ------------------------------------------------------------------
@@ -296,6 +478,32 @@ class Orchestrator:
             state=self._machine.state.value,
         )
         self._reset_to_idle()
+        return TurnResult(
+            utterance=utterance,
+            response="",
+            metrics=metrics,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+    def _recover_after_partial_speech(
+        self, utterance: str, metrics: TurnMetrics, exc: PonzuError
+    ) -> TurnResult:
+        """ADR-014: a sentence was already queued/playing when the stream failed.
+
+        Deliberately does not call `_reset_to_idle()` -- that would cancel
+        playback, and cutting the assistant off mid-sentence to report a
+        backend failure is worse than letting the sentence it already
+        committed to finish. `SPEAKING -> ERROR -> IDLE` is legal on its own
+        (ADR-008: any state may go to ERROR, and ERROR may go to IDLE).
+        """
+        self._machine.transition(State.ERROR)
+        log_event(
+            _log,
+            "turn_failed",
+            reason=type(exc).__name__,
+            state=self._machine.state.value,
+        )
+        self._machine.transition(State.IDLE)
         return TurnResult(
             utterance=utterance,
             response="",

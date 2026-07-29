@@ -275,12 +275,20 @@ class WhisperWakeWord:
             # `ponzu.audio.capture`: summing `_CHUNK_MS` assumes every read
             # returns on time, and a device delivering slower than real time
             # makes the window run far past `max_window_ms`.
-            started_at = time.monotonic()
+            # Started when speech does, NOT when the loop does. This loop
+            # idles in silence for as long as nobody is talking, so a
+            # reference taken up front measures the wait, not the window --
+            # after a minute of quiet the budget below was already blown and
+            # the first speech chunk closed the window instantly, producing
+            # 30 ms of audio and a gate that never fired again.
+            window_started_at: float | None = None
             while not self._stop_event.is_set():
                 data, _overflowed = stream.read(chunk_frames)
                 pcm_chunk = bytes(data)
 
                 if _rms(pcm_chunk) >= _SILENCE_RMS_THRESHOLD:
+                    if not speech_started:
+                        window_started_at = time.monotonic()
                     speech_started = True
                     silence_ms = 0
                 elif not speech_started:
@@ -297,7 +305,11 @@ class WhisperWakeWord:
                     break
                 if window_ms >= self._config.max_window_ms:
                     break
-                if (time.monotonic() - started_at) * 1000 >= self._config.max_window_ms:
+                if (
+                    window_started_at is not None
+                    and (time.monotonic() - window_started_at) * 1000
+                    >= self._config.max_window_ms
+                ):
                     break
         # Stream is closed at this point (the `with` block has exited) --
         # transcription below never runs while the mic is still open.

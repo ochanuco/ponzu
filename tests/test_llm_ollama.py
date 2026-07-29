@@ -211,3 +211,116 @@ def test_probe_never_raises_on_non_2xx() -> None:
     result = _model(handler).probe()  # must not raise
 
     assert result.status == "fail"
+
+
+# --------------------------------------------------------------- generate_stream
+# ADR-014: `generate_stream` is what lets the voice loop speak the first
+# sentence while the model keeps generating. Driven the same way as
+# `generate` above, but the mock response body is newline-delimited JSON.
+
+
+def _ndjson(*objects: dict[str, object]) -> bytes:
+    return b"\n".join(json.dumps(obj).encode() for obj in objects)
+
+
+def test_generate_stream_happy_path_yields_content_only() -> None:
+    body = _ndjson(
+        {"model": "qwen3:30b", "message": {"content": "Hello"}, "done": False},
+        {"model": "qwen3:30b", "message": {"content": ", world"}, "done": False},
+        {"model": "qwen3:30b", "message": {"content": ""}, "done": True},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/chat"
+        assert json.loads(request.content)["stream"] is True
+        return httpx.Response(200, content=body)
+
+    model = _model(handler)
+    chunks = list(model.generate_stream([Message(role="user", content="hi")]))
+
+    assert chunks == ["Hello", ", world"]
+
+
+def test_generate_stream_thinking_only_chunk_yields_nothing() -> None:
+    # ADR-009/ADR-012: reasoning arrives in a separate `thinking` field. A
+    # chunk carrying only that must not fall back to it -- the assistant would
+    # end up speaking its reasoning aloud.
+    body = _ndjson(
+        {"message": {"thinking": "let me consider this"}, "done": False},
+        {"message": {"content": "answer"}, "done": True},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    model = _model(handler)
+    chunks = list(model.generate_stream([Message(role="user", content="hi")]))
+
+    assert chunks == ["answer"]
+
+
+def test_generate_stream_malformed_json_line_raises_adapter_unavailable() -> None:
+    secret_prompt_echo = "this prompt text must never leak into the exception"
+    body = (
+        json.dumps({"message": {"content": "partial"}, "done": False}).encode()
+        + b"\n"
+        + secret_prompt_echo.encode()
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    model = _model(handler)
+
+    with pytest.raises(AdapterUnavailable) as exc_info:
+        list(model.generate_stream([Message(role="user", content="hi")]))
+
+    assert secret_prompt_echo not in str(exc_info.value)
+
+
+def test_generate_stream_connect_error_raises_adapter_unavailable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    model = _model(handler)
+
+    with pytest.raises(AdapterUnavailable):
+        list(model.generate_stream([Message(role="user", content="hi")]))
+
+
+def test_generate_stream_read_timeout_raises_adapter_timeout() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("read timed out", request=request)
+
+    model = _model(handler)
+
+    with pytest.raises(AdapterTimeout):
+        list(model.generate_stream([Message(role="user", content="hi")]))
+
+
+def test_generate_stream_logs_counts_not_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    body = _ndjson(
+        {"message": {"content": "ABCDE"}, "done": False},
+        {"message": {"content": "FGHIJ"}, "done": True},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    model = _model(handler)
+
+    with caplog.at_level(logging.INFO, logger="ponzu.llm.ollama"):
+        list(model.generate_stream([Message(role="user", content="a secret prompt")]))
+
+    record = next(
+        r for r in caplog.records if getattr(r, "ponzu_event", None) == "llm_stream"
+    )
+    assert record.ponzu_fields["message_count"] == 2
+    assert record.ponzu_fields["output_chars"] == 10
+    assert record.ponzu_fields["model"] == "qwen3:30b"
+    assert "duration_ms" in record.ponzu_fields
+    assert "a secret prompt" not in caplog.text
+    assert "ABCDE" not in caplog.text
+    assert "FGHIJ" not in caplog.text

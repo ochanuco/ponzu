@@ -12,7 +12,7 @@ a machine with no audio stack (ADR-009).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
@@ -200,6 +200,22 @@ class LanguageModel(Protocol):
     def generate(
         self, messages: Iterable[Message], *, timeout_s: float | None = None
     ) -> ModelResponse: ...
+
+    def generate_stream(
+        self, messages: Iterable[Message], *, timeout_s: float | None = None
+    ) -> Iterator[str]:
+        """Yield text fragments as the model produces them (ADR-014).
+
+        Additive rather than a replacement for ``generate``: the voice loop
+        streams so it can start speaking before generation finishes, while
+        ``ponzu chat`` has nothing to gain from partial text and keeps using
+        the whole-answer call.
+
+        Fragments are raw model output with no sentence structure imposed —
+        splitting is the orchestrator's job, since where to break for speech is
+        a presentation decision, not transport (ADR-005).
+        """
+        ...
 
 
 @runtime_checkable
