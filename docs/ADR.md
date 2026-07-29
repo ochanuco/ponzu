@@ -358,3 +358,13 @@ interface is also a poor channel for diagnosing its own failures.
   audio hardware, which also makes those layers testable in CI.
 - `ponzu start` is the full loop and is the last of the three to be reachable.
 - The menu bar application from ROADMAP Phase 6 is confirmed out of MVP scope.
+- `ponzu start` runs the same probes as `doctor` before entering the loop and
+  refuses to start if any component fails. Every turn uses the same adapters,
+  so a component already known to be unavailable yields a loop that can only
+  fail — identically, on every wake — which is the stuck behaviour DESIGN
+  section 8 forbids. The probes are cheap: no model is loaded and no stream is
+  opened.
+- The loop prints each turn's outcome to the terminal. DESIGN section 8 step 2
+  asks for a message on failure, and the structured log deliberately records
+  only an error *category* (section 7), which is not enough for a user to know
+  what to fix.

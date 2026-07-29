@@ -93,6 +93,7 @@ class Orchestrator:
         self._silence_timeout_ms = silence_timeout_ms
         self._machine = StateMachine()
         self._stop_requested = False
+        self._turn_callback: Callable[[TurnResult], None] | None = None
 
     @property
     def state(self) -> State:
@@ -101,6 +102,17 @@ class Orchestrator:
     def on_state_change(self, callback: Callable[[State, State], None]) -> None:
         """Subscribe to transitions, for a future status indicator (ADR-008)."""
         self._machine.on_change(callback)
+
+    def on_turn(self, callback: Callable[[TurnResult], None]) -> None:
+        """Subscribe to completed turns during ``run_forever``.
+
+        DESIGN section 8 requires a failure to produce a message for the user
+        when possible, but the orchestrator is a library and must not write to
+        a terminal. ``run_forever`` otherwise swallows every ``TurnResult``,
+        leaving the caller with nothing to report — this is the seam that lets
+        the CLI say what went wrong.
+        """
+        self._turn_callback = callback
 
     # ------------------------------------------------------------------
     # Turns
@@ -216,11 +228,24 @@ class Orchestrator:
         # recoverable failures into a TurnResult, and anything else is logged
         # here so the detector thread survives to hear the next wake word.
         try:
-            self.voice_turn()
-        except Exception:  # noqa: BLE001 - last line of defence for the loop
+            result = self.voice_turn()
+        except Exception as exc:  # noqa: BLE001 - last line of defence for the loop
             log_event(_log, "turn_failed", reason="unexpected")
             _log.exception("unhandled error during turn")
             self._reset_to_idle()
+            result = TurnResult(
+                utterance="",
+                response="",
+                metrics=TurnMetrics(),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+        if self._turn_callback is not None:
+            # A subscriber that raises must not take the loop down with it.
+            try:
+                self._turn_callback(result)
+            except Exception:  # noqa: BLE001
+                _log.exception("turn subscriber raised")
 
     # ------------------------------------------------------------------
     # Stages

@@ -17,7 +17,7 @@ from ponzu.adapters import AdapterUnavailable, Probeable, ProbeResult
 from ponzu.core import factory, paths
 from ponzu.core.config import Config, ConfigError, load_config, write_default_config
 from ponzu.core.logging import setup_logging
-from ponzu.core.orchestrator import Orchestrator
+from ponzu.core.orchestrator import Orchestrator, TurnResult
 
 __all__ = ["main"]
 
@@ -182,15 +182,26 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     rows: list[ProbeResult] = [
         ProbeResult(component="config", status="ok", detail=detail)
     ]
-    rows.append(_safe_probe("llm", lambda: factory.build_llm(cfg)))
-    rows.append(_safe_probe("tts", lambda: factory.build_tts(cfg)))
-    rows.append(_safe_probe("stt", lambda: factory.build_stt(cfg)))
-    rows.append(_safe_probe("audio-in", lambda: factory.build_audio_in(cfg)))
-    rows.append(_safe_probe("audio-out", lambda: factory.build_audio_out(cfg)))
-    rows.append(_safe_probe("wake-word", lambda: factory.build_wake_word(cfg)))
+    rows.extend(_probe_adapters(cfg))
 
     _print_table(rows)
     return 1 if any(row.is_blocking for row in rows) else 0
+
+
+def _probe_adapters(cfg: Config) -> list[ProbeResult]:
+    """Probe every adapter in the fixed ADR-011 column order.
+
+    Shared with `start`'s preflight so the two commands can never disagree
+    about what is broken.
+    """
+    return [
+        _safe_probe("llm", lambda: factory.build_llm(cfg)),
+        _safe_probe("tts", lambda: factory.build_tts(cfg)),
+        _safe_probe("stt", lambda: factory.build_stt(cfg)),
+        _safe_probe("audio-in", lambda: factory.build_audio_in(cfg)),
+        _safe_probe("audio-out", lambda: factory.build_audio_out(cfg)),
+        _safe_probe("wake-word", lambda: factory.build_wake_word(cfg)),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +263,16 @@ def cmd_chat(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _report_turn(result: TurnResult) -> None:
+    """Print one turn's outcome for the person sitting at the terminal."""
+    if result.ok:
+        if result.response:
+            print(result.response)
+        return
+    print(f"turn failed: {result.error}", file=sys.stderr)
+    print("Run `ponzu doctor` to check dependencies.", file=sys.stderr)
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     """Run the full voice loop (ADR-011)."""
     try:
@@ -281,12 +302,30 @@ def cmd_start(args: argparse.Namespace) -> int:
             )
             return 1
 
+    # Preflight. Every turn in the loop uses the same adapters, so a component
+    # that is already known to be unavailable produces a loop that can only
+    # fail, identically, forever. Refusing up front is the same reasoning as
+    # the non-TTY guard above.
+    blocking = [row for row in _probe_adapters(cfg) if row.is_blocking]
+    if blocking:
+        print(
+            "error: cannot start, required components are unavailable:", file=sys.stderr
+        )
+        _print_table(blocking)
+        print("Run `ponzu doctor` for the full report.", file=sys.stderr)
+        return 1
+
     try:
         orchestrator = factory.build_orchestrator(cfg, voice=True)
     except (ConfigError, AdapterUnavailable) as exc:
         print(str(exc), file=sys.stderr)
         print("Run `ponzu doctor` to check dependencies.", file=sys.stderr)
         return 1
+
+    # DESIGN section 8 step 2: a failure should produce a message when
+    # possible. Without this the terminal shows only a JSON `turn_failed`
+    # event naming the exception type, which does not tell the user what to fix.
+    orchestrator.on_turn(_report_turn)
 
     try:
         orchestrator.run_forever()

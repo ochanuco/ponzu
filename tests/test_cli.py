@@ -26,6 +26,7 @@ class FakeOrchestrator:
         self.stopped = False
         self.run_forever_calls = 0
         self.run_forever_error: Exception | None = None
+        self.turn_callback = None
 
     def text_turn(self, utterance: str, *, speak: bool = False) -> TurnResult:
         self.calls.append((utterance, speak))
@@ -39,6 +40,9 @@ class FakeOrchestrator:
         return TurnResult(
             utterance=utterance, response=self._response, metrics=TurnMetrics()
         )
+
+    def on_turn(self, callback) -> None:
+        self.turn_callback = callback
 
     def run_forever(self) -> None:
         self.run_forever_calls += 1
@@ -233,11 +237,19 @@ def _pretend_tty(monkeypatch) -> None:
     monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True, raising=False)
 
 
+def _pretend_deps_ok(monkeypatch) -> None:
+    """`ponzu start` preflights every adapter and refuses to enter a loop that
+    can only fail. The optional extras are absent here, so tests exercising the
+    normal path must stand in for a healthy environment."""
+    monkeypatch.setattr(cli, "_probe_adapters", lambda cfg: [])
+
+
 def test_start_banner_names_keyboard_provider_and_its_limitation(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
     _isolate_data_dir(monkeypatch, tmp_path)
     _pretend_tty(monkeypatch)
+    _pretend_deps_ok(monkeypatch)
     fake = FakeOrchestrator()
     fake.run_forever_error = KeyboardInterrupt()
     monkeypatch.setattr(
@@ -257,6 +269,7 @@ def test_start_banner_names_keyboard_provider_and_its_limitation(
 def test_start_returns_0_on_keyboard_interrupt(monkeypatch, tmp_path: Path) -> None:
     _isolate_data_dir(monkeypatch, tmp_path)
     _pretend_tty(monkeypatch)
+    _pretend_deps_ok(monkeypatch)
     fake = FakeOrchestrator()
     fake.run_forever_error = KeyboardInterrupt()
     monkeypatch.setattr(
@@ -289,3 +302,67 @@ def test_start_refuses_non_interactive_stdin(monkeypatch, tmp_path: Path, capsys
     assert exit_code == 1
     assert "interactive terminal" in captured.err
     assert built == []  # bailed out before constructing anything
+
+
+def test_start_refuses_when_a_required_component_is_unavailable(
+    monkeypatch, tmp_path: Path, capsys
+):
+    _isolate_data_dir(monkeypatch, tmp_path)
+    _pretend_tty(monkeypatch)
+    monkeypatch.setattr(
+        cli,
+        "_probe_adapters",
+        lambda cfg: [
+            cli.ProbeResult(component="llm", status="ok"),
+            cli.ProbeResult(
+                component="audio-in",
+                status="fail",
+                detail="sounddevice is not installed",
+                remedy="uv sync --extra audio",
+            ),
+        ],
+    )
+    built: list[object] = []
+    monkeypatch.setattr(
+        cli.factory,
+        "build_orchestrator",
+        lambda cfg, *, voice, speak=False: built.append(1),
+    )
+
+    exit_code = cli.main(["start"])
+    captured = capsys.readouterr()
+
+    # Regression: the loop used to start anyway, so every Enter produced an
+    # identical AdapterUnavailable turn forever, with nothing on screen saying
+    # what to install.
+    assert exit_code == 1
+    assert "audio-in" in captured.out
+    assert "uv sync --extra audio" in captured.out
+    assert built == []
+
+
+def test_start_reports_a_failed_turn_to_the_user(monkeypatch, tmp_path: Path, capsys):
+    _isolate_data_dir(monkeypatch, tmp_path)
+    _pretend_tty(monkeypatch)
+    _pretend_deps_ok(monkeypatch)
+    fake = FakeOrchestrator()
+    monkeypatch.setattr(
+        cli.factory, "build_orchestrator", lambda cfg, *, voice, speak=False: fake
+    )
+
+    cli.main(["start"])
+    # DESIGN section 8 step 2: the person at the terminal must get a message,
+    # not just a JSON `turn_failed` event naming an exception type.
+    assert fake.turn_callback is not None
+    fake.turn_callback(
+        TurnResult(
+            utterance="",
+            response="",
+            metrics=TurnMetrics(),
+            error="AdapterUnavailable: sounddevice is not installed",
+        )
+    )
+    captured = capsys.readouterr()
+
+    assert "sounddevice is not installed" in captured.err
+    assert "ponzu doctor" in captured.err
