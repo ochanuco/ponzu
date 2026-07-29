@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# SECURITY.md requires read-only default Actions permissions.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-14 # Apple Silicon, matching the ADR-009 target platform.
+    steps:
+      # Pinned to commit SHAs, not tags: a tag is mutable, so `@v4` would let a
+      # compromised or simply changed action run with this workflow's token.
+      # Comments record the tag each SHA came from.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # This job only reads the repository. Leaving the token in .git/config
+          # would expose it to every later step and to anything that archives
+          # the workspace.
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      # --locked fails if uv.lock has drifted from pyproject.toml instead of
+      # quietly re-resolving, so CI verifies the lockfile that ADR-009 makes the
+      # source of dependency truth.
+      #
+      # No extras. ADR-009 requires the package to install and the suite to run
+      # without sounddevice, numpy, or faster-whisper present — CI is what keeps
+      # that true, so installing the extras here would defeat the check.
+      - run: uv sync --locked --extra dev
+
+      - run: uv run ruff check .
+
+      - run: uv run ruff format --check .
+
+      - run: uv run pytest -q

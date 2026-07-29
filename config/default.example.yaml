@@ -1,0 +1,85 @@
+# Ponzu example configuration.
+#
+# This file is the only configuration committed to the repository (ADR-006 /
+# DESIGN section 5.1). Copy it to the runtime data directory
+# (~/Library/Application Support/Ponzu/config.yaml, DESIGN section 5.2) and
+# edit the copy -- never put per-machine or private values here.
+#
+# `phrase`/`sensitivity`, `stt.provider`/`stt.model`, all of `llm` and `tts`
+# except the fields noted below, and all of `privacy` are DESIGN section 5.1
+# verbatim. Every other key exists because the implementation needs it and
+# section 5.1 left it unspecified.
+
+wake_word:
+  phrase: "ぽんず"
+  sensitivity: 0.6
+  # ADR-010: the MVP ships a keyboard-triggered substitute detector as the
+  # default so `ponzu start` is runnable without a trained acoustic model. A
+  # real acoustic engine is a drop-in replacement selected here -- no
+  # orchestrator change should be required to adopt one.
+  provider: "keyboard"
+
+stt:
+  # ADR-009 resolves the backend to faster-whisper. `whisper_cpp` is not a
+  # valid value -- nothing implements it.
+  provider: "faster_whisper"
+  # Either a size name faster-whisper downloads and caches ("tiny", "base",
+  # "small", "medium", "large-v3"), or a directory holding a CTranslate2
+  # model. Anything else is resolved as a Hugging Face repository id, so a
+  # `models/ggml-*.bin` path from whisper.cpp will NOT work here.
+  model: "small"
+  # BCP-47-ish hint passed to the STT backend; "ja" matches the "ぽんず" wake
+  # phrase and the assistant's primary language (DESIGN section 1).
+  language: "ja"
+
+llm:
+  provider: "ollama"
+  endpoint: "http://127.0.0.1:11434"
+  model: "qwen3:30b"
+  # Local models can stall; DESIGN section 8 requires recoverable timeout
+  # handling rather than hanging in THINKING.
+  #
+  # Sized for the cold load, not the steady state. On an M1 Max / 64 GB the
+  # qwen3:30b default takes ~27 s to load 18 GB before answering at all, then
+  # settles at ~4-5 s per warm turn. See DESIGN section 11 for the measured
+  # end-to-end breakdown.
+  timeout_s: 120
+
+tts:
+  provider: "voicevox"
+  endpoint: "http://127.0.0.1:50021"
+  speaker_id: 0
+  # Voice shaping knobs from DESIGN section 4.7 ("all voice settings should
+  # be user configuration, not hard-coded"). Values are VOICEVOX's own
+  # neutral defaults.
+  speed: 1.0
+  pitch: 0.0
+  intonation: 1.0
+  volume: 1.0
+  # DESIGN section 8 treats "VOICEVOX unavailable" as recoverable, so the wait
+  # must be bounded. Higher than llm.timeout_s because synthesising a long
+  # reply takes longer than a chat completion round trip.
+  timeout_s: 60.0
+
+audio:
+  # null selects the OS default input/output device (sounddevice convention).
+  input_device: null
+  output_device: null
+  # DESIGN section 4.3 recommended runtime format: mono, 16 kHz, 16-bit.
+  sample_rate: 16000
+  # Hard ceiling on one utterance capture so a stuck LISTENING state cannot
+  # happen even if silence detection fails (DESIGN section 8).
+  max_utterance_ms: 10000
+  # How much trailing silence ends an utterance.
+  silence_timeout_ms: 1200
+
+privacy:
+  persist_audio: false
+  persist_transcripts: false
+  persist_conversations: false
+
+logging:
+  # DESIGN section 7: state transitions, timings, and counts only by
+  # default -- never raw transcripts, prompts, or audio.
+  level: "info"
+  format: "json"

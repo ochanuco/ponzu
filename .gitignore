@@ -1,0 +1,36 @@
+# --- SECURITY.md "Recommended .gitignore" (verbatim) ---
+.env
+.env.*
+!.env.example
+
+config.local.*
+*.db
+*.sqlite
+*.sqlite3
+
+# Anchored to the repository root. Unanchored, `audio/` also matched the
+# source package `src/ponzu/audio/`, which was then never committed -- a clone
+# installed and failed at import. See SECURITY.md.
+/audio/
+/recordings/
+/logs/
+/models/
+/runtime/
+/data/private/
+
+*.wav
+*.mp3
+*.m4a
+*.pcm
+
+.DS_Store
+
+# --- Python / uv (added per project brief; uv.lock is intentionally NOT
+# ignored -- ADR-009 treats pyproject.toml + uv.lock as the single source of
+# dependency truth) ---
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
