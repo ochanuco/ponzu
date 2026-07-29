@@ -504,25 +504,34 @@ Write and high-impact operations should require explicit confirmation.
 
 - Default local LLM (example configuration uses `qwen3:30b`)
 
-  Measured on an M1 Max / 64 GB, `qwen3:30b` via Ollama:
+  Measured end to end on an M1 Max / 64 GB over three consecutive `ponzu
+  start` turns, warm model:
 
-  | | |
-  | --- | --- |
-  | Cold load (18 GB) | ~27 s |
-  | Warm turn | ~35 s |
-  | Reasoning emitted for an 8-character answer | ~6,800 characters |
+  | Turn | Utterance | STT | LLM | TTS | Stop speaking → reply starts |
+  | --- | --- | --- | --- | --- | --- |
+  | 1 | 3.6 s | 1531 ms | 4833 ms | 1384 ms | 6.4 s |
+  | 2 | 4.2 s | 874 ms | 4064 ms | 1030 ms | 4.9 s |
+  | 3 | 6.2 s | 1016 ms | 4114 ms | 1096 ms | 5.1 s |
 
-  This does not meet the non-functional requirement "low enough latency for
-  conversational use" in section 2. The cost is the reasoning trace, not the
-  parameter count: the model thinks at length before answering briefly.
+  Cold-loading the 18 GB model costs ~27 s once, before the first turn.
 
-  Disabling it is not a fix. With Ollama's `think: false`, `qwen3:30b` stops
-  separating its reasoning and leaks it into `message.content` instead, so the
-  assistant would speak "Okay, the user said..." aloud. Reasoning must stay
-  enabled for the adapter's `message.content` read to be correct.
+  An earlier revision of this section recorded ~35 s per warm turn and
+  concluded the model could not meet the "low enough latency for conversational
+  use" requirement in section 2. That measurement was taken with a bare `curl`
+  and no system prompt, where the model produced ~6,800 characters of reasoning
+  before answering. Through the real pipeline the persona's response-length
+  constraint (section 4.6) keeps reasoning short, and the LLM stage settles
+  around 4-5 s. The earlier conclusion was wrong and the model is usable.
 
-  Resolving this therefore means choosing a different default model, not
-  tuning the current one.
+  What remains true: with Ollama's `think: false`, `qwen3:30b` stops separating
+  its reasoning and leaks it into `message.content`, so the assistant would
+  speak "Okay, the user said..." aloud. Reasoning must stay enabled for the
+  adapter's `message.content` read to be correct.
+
+  ~5 s from end of speech to start of reply is usable but not comfortable.
+  The LLM is the largest single stage, so a smaller model is still the obvious
+  lever; streaming (ROADMAP Phase 2) would cut perceived latency without
+  changing the model.
 
 - VOICEVOX speaker
 - Packaging and process supervision

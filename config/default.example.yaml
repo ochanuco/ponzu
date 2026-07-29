@@ -39,10 +39,10 @@ llm:
   # Local models can stall; DESIGN section 8 requires recoverable timeout
   # handling rather than hanging in THINKING.
   #
-  # Measured on an M1 Max / 64 GB with the qwen3:30b default: ~27 s to
-  # cold-load 18 GB, and ~35 s for a warm turn, because a reasoning model
-  # emits thousands of characters of thinking before a short answer. A
-  # smaller or non-reasoning model can take a much lower value here.
+  # Sized for the cold load, not the steady state. On an M1 Max / 64 GB the
+  # qwen3:30b default takes ~27 s to load 18 GB before answering at all, then
+  # settles at ~4-5 s per warm turn. See DESIGN section 11 for the measured
+  # end-to-end breakdown.
   timeout_s: 120
 
 tts:
