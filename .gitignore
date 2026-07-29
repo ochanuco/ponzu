@@ -8,12 +8,15 @@ config.local.*
 *.sqlite
 *.sqlite3
 
-audio/
-recordings/
-logs/
-models/
-data/private/
-runtime/
+# Anchored to the repository root. Unanchored, `audio/` also matched the
+# source package `src/ponzu/audio/`, which was then never committed -- a clone
+# installed and failed at import. See SECURITY.md.
+/audio/
+/recordings/
+/logs/
+/models/
+/runtime/
+/data/private/
 
 *.wav
 *.mp3

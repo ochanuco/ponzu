@@ -38,12 +38,18 @@ config.local.*
 *.sqlite
 *.sqlite3
 
-audio/
-recordings/
-logs/
-models/
-data/private/
-runtime/
+# Anchored with a leading slash on purpose. An unanchored `audio/` matches a
+# directory of that name at ANY depth, including the source package
+# `src/ponzu/audio/`, which is then silently never committed -- the clone
+# installs and fails at import. These entries exist to catch runtime data
+# accidentally written into the checkout; per ADR-006 it belongs in the user
+# data directory, so matching only the repository root is what is wanted.
+/audio/
+/recordings/
+/logs/
+/models/
+/runtime/
+/data/private/
 
 *.wav
 *.mp3
@@ -52,6 +58,10 @@ runtime/
 
 .DS_Store
 ```
+
+Directory patterns for runtime data must stay anchored. Source directories are
+named after what they do, so a bare `logs/` or `models/` will eventually
+collide with one.
 
 ## GitHub Settings
 
