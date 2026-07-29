@@ -152,14 +152,17 @@ def test_chat_with_speak_wires_output_but_still_no_microphone(default_config) ->
 def test_build_orchestrator_voice_true_wires_every_adapter(default_config) -> None:
     orchestrator = factory.build_orchestrator(default_config, voice=True)
 
-    # audio_in and stt are both non-None now, so voice_turn gets past the
-    # "wiring bug" RuntimeError check entirely. It still fails -- there is no
-    # real microphone in this environment -- but that failure is a recoverable
-    # PonzuError the orchestrator itself catches and turns into a failed
-    # TurnResult (not a raise), which is exactly what proves every adapter
-    # parameter was actually supplied rather than left as None.
-    result = orchestrator.voice_turn()
-    assert not result.ok
+    # Assert the wiring directly rather than calling voice_turn(). An earlier
+    # version relied on the turn failing because the machine had no microphone,
+    # which silently became a live recording the moment someone installed the
+    # audio extra.
+    assert orchestrator._stt is not None
+    assert orchestrator._tts is not None
+    assert orchestrator._audio_in is not None
+    assert orchestrator._audio_out is not None
+    assert orchestrator._wake_word is not None
+    assert orchestrator._max_utterance_ms == default_config.audio.max_utterance_ms
+    assert orchestrator._silence_timeout_ms == default_config.audio.silence_timeout_ms
 
 
 # ---------------------------------------------------- no hardware/network touch

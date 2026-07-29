@@ -32,7 +32,12 @@ llm:
   model: "qwen3:30b"
   # Local models can stall; DESIGN section 8 requires recoverable timeout
   # handling rather than hanging in THINKING.
-  timeout_s: 30
+  #
+  # Measured on an M1 Max / 64 GB with the qwen3:30b default: ~27 s to
+  # cold-load 18 GB, and ~35 s for a warm turn, because a reasoning model
+  # emits thousands of characters of thinking before a short answer. A
+  # smaller or non-reasoning model can take a much lower value here.
+  timeout_s: 120
 
 tts:
   provider: "voicevox"

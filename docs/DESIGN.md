@@ -503,6 +503,27 @@ Write and high-impact operations should require explicit confirmation.
 
 - STT backend and model size (default candidate: `faster-whisper`, `small`)
 - Default local LLM (example configuration uses `qwen3:30b`)
+
+  Measured on an M1 Max / 64 GB, `qwen3:30b` via Ollama:
+
+  | | |
+  | --- | --- |
+  | Cold load (18 GB) | ~27 s |
+  | Warm turn | ~35 s |
+  | Reasoning emitted for an 8-character answer | ~6,800 characters |
+
+  This does not meet the non-functional requirement "low enough latency for
+  conversational use" in section 2. The cost is the reasoning trace, not the
+  parameter count: the model thinks at length before answering briefly.
+
+  Disabling it is not a fix. With Ollama's `think: false`, `qwen3:30b` stops
+  separating its reasoning and leaks it into `message.content` instead, so the
+  assistant would speak "Okay, the user said..." aloud. Reasoning must stay
+  enabled for the adapter's `message.content` read to be correct.
+
+  Resolving this therefore means choosing a different default model, not
+  tuning the current one.
+
 - VOICEVOX speaker
 - Packaging and process supervision
 - Short-term context retention policy

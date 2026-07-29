@@ -112,7 +112,11 @@ _DEFAULTS: dict[str, Any] = {
         "provider": "ollama",
         "endpoint": "http://127.0.0.1:11434",
         "model": "qwen3:30b",
-        "timeout_s": 30.0,
+        # Measured on an M1 Max / 64 GB against the default qwen3:30b:
+        # ~27 s to cold-load 18 GB, and ~35 s for a warm turn because the model
+        # emits thousands of characters of reasoning before a short answer.
+        # 30 s therefore failed on ordinary turns, not just the first one.
+        "timeout_s": 120.0,
     },
     "tts": {
         "provider": "voicevox",

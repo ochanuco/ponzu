@@ -109,7 +109,10 @@ def test_module_imports_without_optional_dependencies() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_transcribe_raises_adapter_unavailable_without_faster_whisper() -> None:
+def test_transcribe_raises_adapter_unavailable_without_faster_whisper(
+    hide_module,
+) -> None:
+    hide_module("faster_whisper")
     from ponzu.stt.whisper import WhisperRecognizer
 
     recognizer = WhisperRecognizer(_config())
@@ -119,7 +122,8 @@ def test_transcribe_raises_adapter_unavailable_without_faster_whisper() -> None:
         recognizer.transcribe(audio)
 
 
-def test_probe_fails_without_faster_whisper() -> None:
+def test_probe_fails_without_faster_whisper(hide_module) -> None:
+    hide_module("faster_whisper")
     from ponzu.stt.whisper import WhisperRecognizer
 
     result = WhisperRecognizer(_config()).probe()

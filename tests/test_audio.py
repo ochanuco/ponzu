@@ -161,7 +161,10 @@ def _config(**overrides) -> AudioConfig:
     return AudioConfig(**base)
 
 
-def test_capture_utterance_raises_adapter_unavailable_without_sounddevice() -> None:
+def test_capture_utterance_raises_adapter_unavailable_without_sounddevice(
+    hide_module,
+) -> None:
+    hide_module("sounddevice")
     from ponzu.audio.capture import MicrophoneInput
 
     mic = MicrophoneInput(_config())
@@ -169,7 +172,8 @@ def test_capture_utterance_raises_adapter_unavailable_without_sounddevice() -> N
         mic.capture_utterance(max_duration_ms=1000, silence_timeout_ms=200)
 
 
-def test_capture_probe_fails_without_sounddevice() -> None:
+def test_capture_probe_fails_without_sounddevice(hide_module) -> None:
+    hide_module("sounddevice")
     from ponzu.audio.capture import MicrophoneInput
 
     result = MicrophoneInput(_config()).probe()
@@ -267,7 +271,8 @@ def test_capture_probe_reports_ok_and_fail_on_device_presence(monkeypatch) -> No
 # ---------------------------------------------------------------------------
 
 
-def test_play_raises_adapter_unavailable_without_sounddevice() -> None:
+def test_play_raises_adapter_unavailable_without_sounddevice(hide_module) -> None:
+    hide_module("sounddevice")
     from ponzu.audio.playback import SpeakerOutput
 
     speaker = SpeakerOutput()
@@ -276,7 +281,8 @@ def test_play_raises_adapter_unavailable_without_sounddevice() -> None:
         speaker.play(audio)
 
 
-def test_playback_probe_fails_without_sounddevice() -> None:
+def test_playback_probe_fails_without_sounddevice(hide_module) -> None:
+    hide_module("sounddevice")
     from ponzu.audio.playback import SpeakerOutput
 
     result = SpeakerOutput().probe()
