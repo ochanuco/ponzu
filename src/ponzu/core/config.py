@@ -57,6 +57,9 @@ class SttConfig:
     provider: str
     model: str
     language: str
+    # Vocabulary bias passed to the recogniser (DESIGN section 4.4). Empty
+    # disables it.
+    initial_prompt: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +92,12 @@ class AudioConfig:
     # Bounds the wait for speech to begin; `silence_timeout_ms` only applies
     # once speech has already started (DESIGN section 4.3).
     speech_start_timeout_ms: int
+    # ADR-015: after speaking, how long to keep listening with no wake word
+    # before giving up and returning to IDLE. `0` disables the feature
+    # entirely -- a false-trigger risk (room noise crossing the capture's RMS
+    # floor with no wake word standing between it and a turn), so it must be
+    # possible to turn off.
+    follow_up_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +114,24 @@ class LoggingConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class UiConfig:
+    """What the terminal shows. Not logging.
+
+    `show_thinking` started out under `logging`, which was misleading:
+    reasoning is never written to a log whatever this says (DESIGN section 7
+    excludes model output), so a `logging` key implying otherwise would send a
+    reader looking in the wrong place. This controls what is printed to a
+    terminal the user is already watching, which is a different act.
+    """
+
+    # ADR-015: a reasoning model spends ~99% of a turn thinking before the
+    # first character of the answer exists (ADR-014). Printing it fills that
+    # silence. Default True because an assistant that looks frozen is the
+    # worse failure.
+    show_thinking: bool
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     wake_word: WakeWordConfig
     stt: SttConfig
@@ -113,6 +140,7 @@ class Config:
     audio: AudioConfig
     privacy: PrivacyConfig
     logging: LoggingConfig
+    ui: UiConfig
 
 
 # In-code mirror of config/default.example.yaml (DESIGN section 5.1 plus the
@@ -151,15 +179,21 @@ _DEFAULTS: dict[str, Any] = {
         "provider": "faster_whisper",
         "model": "small",
         "language": "ja",
+        # Seeds the recogniser's vocabulary (DESIGN section 4.4). Proper nouns
+        # are where it fails hardest, and the assistant then reasons
+        # confidently about the wrong word. Users should add their own terms.
+        "initial_prompt": "ぽんず",
     },
     "llm": {
         "provider": "ollama",
         "endpoint": "http://127.0.0.1:11434",
-        "model": "qwen3:30b",
-        # Sized for the cold load, not the steady state. On an M1 Max / 64 GB
-        # the default qwen3:30b takes ~27 s to load 18 GB before answering at
-        # all, then settles at ~4-5 s per warm turn (DESIGN section 11). The
-        # original 30 s could not cover the cold start.
+        # The non-thinking variant of the same 30B-A3B model (ADR-016).
+        # Ollama's template implements no thinking switch, so the reasoning
+        # variant cannot be told to skip it -- a separate tag is the switch.
+        "model": "qwen3:30b-instruct",
+        # Sized for the cold load, not the steady state: ~27 s to load 18 GB
+        # before answering at all. Warm turns are now sub-second (ADR-016), but
+        # the cold start is unchanged and is what this has to cover.
         "timeout_s": 120.0,
     },
     "tts": {
@@ -194,6 +228,12 @@ _DEFAULTS: dict[str, Any] = {
         # still reacting to the cue. This bounds dead air without racing the
         # person it is waiting for.
         "speech_start_timeout_ms": 5000,
+        # ADR-015: how long to keep listening after speaking, with no wake
+        # word needed, before giving up and returning to IDLE. 4000, not
+        # speech_start_timeout_ms's 5000 -- a follow-up already has the
+        # user's attention, so it does not need as generous a reaction
+        # window. `0` disables the feature entirely.
+        "follow_up_ms": 4000,
     },
     "privacy": {
         "persist_audio": False,
@@ -201,6 +241,10 @@ _DEFAULTS: dict[str, Any] = {
         "persist_conversations": False,
     },
     "logging": {"level": "info", "format": "json"},
+    "ui": {
+        # ADR-015: on by default -- see UiConfig.show_thinking.
+        "show_thinking": True,
+    },
 }
 
 # (section, key) pairs holding filesystem paths or network endpoints, where
@@ -365,6 +409,7 @@ def load_config(path: Path | None = None) -> Config:
         audio=AudioConfig(**merged["audio"]),
         privacy=PrivacyConfig(**merged["privacy"]),
         logging=LoggingConfig(**merged["logging"]),
+        ui=UiConfig(**merged["ui"]),
     )
 
 

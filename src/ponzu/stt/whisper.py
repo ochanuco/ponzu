@@ -121,7 +121,13 @@ class WhisperRecognizer:
 
         configured_language = self._config.language
         language = None if configured_language in ("", "auto") else configured_language
-        segments, info = model.transcribe(samples, language=language)
+        # DESIGN section 4.4: bias the vocabulary toward names the model would
+        # not otherwise reach for. Empty means "no bias", which is what
+        # faster-whisper expects as None rather than "".
+        prompt = self._config.initial_prompt or None
+        segments, info = model.transcribe(
+            samples, language=language, initial_prompt=prompt
+        )
 
         texts: list[str] = []
         logprobs: list[float] = []

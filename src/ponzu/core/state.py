@@ -45,6 +45,15 @@ _PRIMARY_PATH: tuple[State, ...] = (
 # ADR-008 text transition, used by `ponzu chat`: typed input means nothing is
 # captured or transcribed, so those two states are skipped rather than faked.
 # THINKING -> IDLE covers a text turn that produces no spoken output.
+# ADR-015: after speaking, a configured follow-up window returns to LISTENING
+# so a second utterance needs no wake word. Only taken when the window is
+# enabled, which keeps a follow-up distinguishable from a wake-word turn in the
+# state trace.
+_FOLLOW_UP_PATH: tuple[State, ...] = (
+    State.SPEAKING,
+    State.LISTENING,
+)
+
 _TEXT_PATH: tuple[State, ...] = (
     State.IDLE,
     State.THINKING,
@@ -54,7 +63,7 @@ _TEXT_PATH: tuple[State, ...] = (
 
 def _build_allowed() -> dict[State, frozenset[State]]:
     allowed: dict[State, set[State]] = {state: set() for state in State}
-    for path in (_PRIMARY_PATH, _TEXT_PATH):
+    for path in (_PRIMARY_PATH, _TEXT_PATH, _FOLLOW_UP_PATH):
         for src, dst in pairwise(path):
             allowed[src].add(dst)
     for state in State:

@@ -28,10 +28,17 @@ def test_defaults_load_with_no_file_present(tmp_path: Path) -> None:
     assert config.wake_word.silence_timeout_ms == 600
     assert config.wake_word.variants == ["ぽんず", "ポンズ", "ポン酢", "ぽん酢"]
     assert config.llm.provider == "ollama"
-    assert config.llm.model == "qwen3:30b"
+    # ADR-016: the non-thinking variant. The reasoning one spent 13 s (median)
+    # thinking before the first character of an answer.
+    assert config.llm.model == "qwen3:30b-instruct"
     assert config.privacy.persist_audio is False
     assert config.audio.sample_rate == 16000
     assert config.logging.format == "json"
+    # ADR-015: the follow-up window is on by default (4s) but disableable
+    # with 0; reasoning is printed by default (an assistant that looks frozen
+    # for ten seconds is the worse failure).
+    assert config.audio.follow_up_ms == 4000
+    assert config.ui.show_thinking is True
 
 
 def test_deep_merge_overlays_only_specified_keys(tmp_path: Path) -> None:
@@ -208,3 +215,42 @@ def test_whitespace_only_wake_word_variant_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="blank"):
         load_config(config_file)
+
+
+# ------------------------------------------------------------- ADR-015 keys
+
+
+def test_follow_up_ms_can_be_overridden_and_disabled(tmp_path: Path) -> None:
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text("audio:\n  follow_up_ms: 0\n")
+
+    config = load_config(user_config)
+
+    # 0 is the documented way to disable the feature entirely -- must not be
+    # rejected as an invalid or "falsy" value.
+    assert config.audio.follow_up_ms == 0
+
+
+def test_follow_up_ms_rejects_a_non_int_value(tmp_path: Path) -> None:
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text('audio:\n  follow_up_ms: "soon"\n')
+
+    with pytest.raises(ConfigError, match="audio.follow_up_ms"):
+        load_config(user_config)
+
+
+def test_show_thinking_can_be_disabled(tmp_path: Path) -> None:
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text("ui:\n  show_thinking: false\n")
+
+    config = load_config(user_config)
+
+    assert config.ui.show_thinking is False
+
+
+def test_show_thinking_rejects_a_non_bool_value(tmp_path: Path) -> None:
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text("ui:\n  show_thinking: 1\n")
+
+    with pytest.raises(ConfigError, match="ui.show_thinking"):
+        load_config(user_config)

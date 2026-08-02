@@ -340,6 +340,23 @@ is no longer running.
 - `run_forever` exits when the detector stops on its own, instead of spinning.
 - `ponzu start` refuses to start the keyboard substitute on a non-interactive
   stdin, rather than appearing to run while being unable to ever respond.
+- **`stop()` must not return while the detector thread is still inside its
+  audio backend.** Python runs `atexit` handlers while daemon threads are
+  still executing, and `sounddevice` terminates PortAudio from one. A detector
+  thread still tearing its stream down then deadlocks against that teardown on
+  a CoreAudio HAL mutex, and the process hangs on exit with both threads in
+  `__psynch_mutexwait`. Observed and captured with `sample(1)`:
+
+  ```text
+  main    Py_Exit -> atexit -> Pa_Terminate -> AudioOutputUnitStop
+                  -> std::recursive_mutex::lock()   [blocked]
+  gate    FinishStoppingStream -> AudioDeviceStop_mac_imp
+                  -> HALB_Mutex::Lock()             [blocked]
+  ```
+
+  The join in `stop()` therefore has to be long enough to cover a slow
+  CoreAudio close, not merely long enough for the loop to notice the stop
+  flag.
 - The MVP ships a keyboard-triggered detector as the default so `ponzu start`
   is runnable, and an always-on detector for testing.
 - A real acoustic engine is a drop-in replacement selected by configuration —
@@ -421,10 +438,12 @@ before hearing *something*, which is not the same as how long generation takes.
 
 - `llm.model` stays `qwen3:30b`; `llm.timeout_s` stays sized for the ~27 s
   cold load rather than the ~4-5 s steady state.
-- Perceived latency is a **streaming** problem (ROADMAP Phase 2: streaming LLM
-  output, sentence-level TTS). Emitting the first sentence to VOICEVOX while
-  the rest is still generating should cut time-to-first-audio to 1-2 s without
-  touching model choice.
+- ~~Perceived latency is a **streaming** problem.~~ **Superseded by ADR-014's
+  measurements: this was wrong.** Streaming was implemented and it moved
+  time-to-first-audio by 0.16 s, because `qwen3:30b` emits its entire reasoning
+  trace before the first character of `content`. Nothing downstream can start
+  earlier than reasoning finishes, so the latency is a *model* property after
+  all — the opposite of what this ADR concluded. See ADR-014.
 - Reasoning stays enabled. ADR-009's note holds: Ollama's `think: false` makes
   this model leak its reasoning into `message.content`.
 - The persona's response-length constraint (DESIGN section 4.6) is
@@ -533,3 +552,216 @@ fire.
 a floor against garbage, not a discriminating threshold, and the default is set
 below the observed band rather than at the 0.6 the original DESIGN example
 suggested. Do not read it as a probability.
+
+---
+
+## ADR-014: Streaming Response with Sentence-Level Synthesis
+
+- **Status:** Accepted
+- **Decision:** `ponzu start` streams the model's answer and synthesises it one
+  sentence at a time, so speech begins before generation finishes.
+
+### Context
+
+Measured on a live turn, wake word to the reply becoming audible was ~19 s:
+
+| Stage | Time |
+| --- | --- |
+| User speaking | 3.9 s |
+| Trailing silence before capture ends | 1.2 s |
+| STT | 1.3 s |
+| **LLM** | **13.6 s** |
+| Synthesis | 1.1 s |
+
+The LLM is roughly 70% of the wait, and essentially all of it is spent waiting
+for the *last* token of an answer whose first sentence was ready far earlier.
+ADR-012 already concluded that this is a streaming problem rather than a
+model-size problem; this is that work.
+
+### Decision
+
+- `LanguageModel` gains `generate_stream`. It is **additive**: `generate`
+  stays, and `ponzu chat` keeps using it. Only the voice loop streams.
+  Collapsing both into one iterator-returning method would have rewritten every
+  existing call site, adapter, and test to buy nothing for the text path.
+- The orchestrator accumulates fragments and cuts a sentence on `。`, `！`, `？`
+  or a newline. Simple and predictable, and it fits the persona, which already
+  instructs replies of two to three sentences (DESIGN section 4.6).
+- Sentences are synthesised and played in order while generation continues.
+- A failure part-way through **lets queued audio finish playing** before
+  transitioning to `ERROR`. Cutting the assistant off mid-word to report a
+  backend failure is worse than letting it complete the sentence it already
+  committed to.
+
+### Consequences
+
+- Time to first audio becomes a function of the first sentence, not the whole
+  answer.
+- `SPEAKING` is now entered while the model is still generating, so the state
+  no longer means "generation finished". ADR-008's table is unchanged —
+  `THINKING -> SPEAKING` was already legal — but the trace reads differently.
+- `AudioOutput` must play queued clips back to back (DESIGN section 4.8).
+  Overlapping assistant speech was already forbidden; now the sequencing is
+  load-bearing rather than incidental.
+- `TurnMetrics.tts_ms` becomes the sum of per-sentence synthesis, and a new
+  first-audio measurement is what actually reflects the improvement.
+- Barge-in remains out of scope (ROADMAP Phase 2, separate).
+
+### Measured after implementing it
+
+Streaming shipped, and then measured against `qwen3:30b`:
+
+```text
+first content character : 28.86 s
+full answer             : 29.02 s   (difference: 0.16 s)
+```
+
+Broken down by field, on a warm model:
+
+| | Starts | Ends | Output |
+| --- | --- | --- | --- |
+| `thinking` | 0.22 s | 5.37 s | 1,184 chars |
+| `content` | 5.44 s | — | 27 chars |
+
+Reasoning is ~99% of the wait and it **completes before the first character of
+`content` exists**. Streaming `content` therefore cannot start speech any
+earlier — there is nothing to stream until the model has already finished
+thinking. The answer itself is 27 characters, so there is no meaningful
+generation time left to overlap with.
+
+This refutes the premise this ADR was written on, and ADR-012's conclusion that
+latency was a streaming problem rather than a model-size problem. Both were
+reasoned from the shape of the pipeline instead of measured.
+
+What follows:
+
+- The streaming implementation is kept. It is correct, tested, and becomes the
+  win it was meant to be the moment the model emits `content` progressively.
+  It is simply not sufficient on its own.
+- The lever that remains is the **model**. A non-reasoning model would start
+  emitting `content` immediately, at which point streaming does what ADR-014
+  claimed. Disabling reasoning on `qwen3:30b` is not that option: ADR-009
+  records that `think: false` makes it leak reasoning into `content`, so the
+  assistant would speak "Okay, the user said…" aloud.
+- DESIGN section 11's default-LLM entry, closed by ADR-012, is reopened.
+
+---
+
+## ADR-015: Follow-Up Window and Visible Reasoning
+
+- **Status:** Accepted
+- **Decision:** After speaking, the assistant keeps listening briefly so a
+  follow-up needs no second wake word. Separately, the model's reasoning is
+  shown on the terminal while it is being produced.
+
+### Context — follow-up
+
+Every turn required saying "ぽんず" again, because `SPEAKING` returned
+unconditionally to `IDLE` and only the wake gate could start a turn. That is
+wrong for conversation: the natural thing after an answer is to keep talking.
+
+### Context — visible reasoning
+
+ADR-014 measured that `qwen3:30b` spends ~99% of a turn producing `thinking`
+before the first character of `content` exists. The adapter deliberately drops
+those fragments so the assistant never speaks its reasoning aloud, but dropping
+them is why roughly ten seconds of every turn shows nothing but `…thinking`.
+
+The material to fill that silence already arrives; it was simply discarded.
+
+### Decision
+
+- `SPEAKING -> LISTENING` becomes a legal transition, taken when a follow-up
+  window is configured. If speech starts within the window a turn runs with no
+  wake word; if it does not, the assistant returns to `IDLE`.
+- The window reuses the existing `speech_start_timeout_ms` machinery — "wait
+  this long for speech to begin, then give up" is exactly the same question.
+- `generate_stream` gains an optional `on_thinking` callback. Reasoning
+  fragments go there; the iterator still yields only speakable `content`. The
+  adapter stays transport-only (ADR-005): it forwards what the backend sent and
+  interprets nothing.
+- The CLI prints reasoning to the terminal. It is **not** logged: DESIGN
+  section 7 excludes model output from logs, and reasoning is model output.
+  Printing to a terminal the user is already watching is a different act from
+  writing it to a file.
+
+### Consequences
+
+- ADR-008's transition table gains one edge. `SPEAKING -> LISTENING` is only
+  taken when the follow-up window is enabled, so the trace still distinguishes
+  a wake-word turn from a follow-up.
+- The follow-up window is a **false-trigger risk**: room noise measured above
+  the RMS threshold in practice, and during the window there is no wake word
+  standing between that noise and a turn. It is therefore short by default and
+  can be disabled with `0`.
+- A follow-up turn skips the gate entirely, so it does not pay the
+  transcription the gate would have done — follow-ups are cheaper, not just
+  more convenient.
+- Reasoning on screen is verbose (over 1,000 characters is normal). It is on by
+  default because an assistant that looks frozen for ten seconds is the worse
+  failure, and it is configurable.
+
+---
+
+## ADR-016: `qwen3:30b-instruct` — Switching Models Instead of Switching Modes
+
+- **Status:** Accepted
+- **Supersedes:** ADR-012's model choice
+- **Decision:** The default becomes **`qwen3:30b-instruct`**, the non-thinking
+  variant of the same 30B-A3B model.
+
+### Context
+
+ADR-014 measured that the reasoning variant produces its entire thinking trace
+before the first character of an answer exists, so streaming cannot start speech
+any earlier. Qwen3 is designed to switch between thinking and non-thinking modes
+within one model, so the obvious fix was to switch modes per turn — greetings,
+the time, a status check do not need deliberation.
+
+That does not work here, and the reason is Ollama, not Qwen3. Every documented
+placement was measured against a greeting:
+
+| | Time | Thinking | Answer |
+| --- | --- | --- | --- |
+| baseline | 3.9 s | 814 chars | clean |
+| `/no_think` in the user message | 27.4 s | 5,196 chars | clean |
+| `/no_think` at the end of system | 15.7 s | 2,932 chars | clean |
+| `/no_think` at the start of system | 35.3 s | 6,499 chars | clean |
+| Ollama's `think: false` | 19.5 s | 0 chars | **leaks reasoning** |
+
+Reading Ollama's chat template for this model explains all of it: there is no
+`enable_thinking` handling and no `/no_think` handling — only the assembly of a
+`<think>` block. So `/no_think` reaches the model as ordinary text with nothing
+to act on, and `think: false` merely stops Ollama *parsing* the thinking; the
+model still generates it, and with no `<think>` block to land in it appears in
+`content`. That is why the assistant said "Okay, the user said…" out loud.
+
+The switch Qwen3 provides is not reachable through this runtime, so the tag is
+the switch instead.
+
+### Measured
+
+Same persona, same prompts, warm model:
+
+| | Reasoning variant | `-instruct` |
+| --- | --- | --- |
+| Time to first character (median) | 13.12 s | **0.23 s** |
+| Thinking emitted | 843-7,330 chars | 0 |
+| "今日の天気を教えて" fabricated | 0/5 | **0/5** |
+
+57x faster to first audio with no loss of honesty — asked for the time or the
+weather it still declines rather than inventing one, which is what ruled out
+`qwen2.5:14b` (4 of 5 fabricated a forecast).
+
+### Consequences
+
+- `llm.timeout_s` stays at 120 s. Warm turns are now sub-second, but the ~27 s
+  cold load is unchanged and is what the timeout has to cover.
+- ADR-014's streaming becomes what it was meant to be: with `content` arriving
+  immediately, sentence-level synthesis starts speech almost at once.
+- Visible reasoning (ADR-015) has nothing to display on this model. The feature
+  stays — it costs nothing when no fragments arrive, and it is what makes a
+  reasoning model tolerable if one is ever configured again.
+- Deliberation is gone as well as the wait. If a task later needs it, the
+  reasoning variant is one config line away, and that is the trade being made
+  knowingly rather than by default.

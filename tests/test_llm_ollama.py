@@ -211,3 +211,213 @@ def test_probe_never_raises_on_non_2xx() -> None:
     result = _model(handler).probe()  # must not raise
 
     assert result.status == "fail"
+
+
+# --------------------------------------------------------------- generate_stream
+# ADR-014: `generate_stream` is what lets the voice loop speak the first
+# sentence while the model keeps generating. Driven the same way as
+# `generate` above, but the mock response body is newline-delimited JSON.
+
+
+def _ndjson(*objects: dict[str, object]) -> bytes:
+    return b"\n".join(json.dumps(obj).encode() for obj in objects)
+
+
+def test_generate_stream_happy_path_yields_content_only() -> None:
+    body = _ndjson(
+        {"model": "qwen3:30b", "message": {"content": "Hello"}, "done": False},
+        {"model": "qwen3:30b", "message": {"content": ", world"}, "done": False},
+        {"model": "qwen3:30b", "message": {"content": ""}, "done": True},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/chat"
+        assert json.loads(request.content)["stream"] is True
+        return httpx.Response(200, content=body)
+
+    model = _model(handler)
+    chunks = list(model.generate_stream([Message(role="user", content="hi")]))
+
+    assert chunks == ["Hello", ", world"]
+
+
+def test_generate_stream_thinking_only_chunk_yields_nothing() -> None:
+    # ADR-009/ADR-012: reasoning arrives in a separate `thinking` field. A
+    # chunk carrying only that must not fall back to it -- the assistant would
+    # end up speaking its reasoning aloud.
+    body = _ndjson(
+        {"message": {"thinking": "let me consider this"}, "done": False},
+        {"message": {"content": "answer"}, "done": True},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    model = _model(handler)
+    chunks = list(model.generate_stream([Message(role="user", content="hi")]))
+
+    assert chunks == ["answer"]
+
+
+def test_generate_stream_malformed_json_line_raises_adapter_unavailable() -> None:
+    secret_prompt_echo = "this prompt text must never leak into the exception"
+    body = (
+        json.dumps({"message": {"content": "partial"}, "done": False}).encode()
+        + b"\n"
+        + secret_prompt_echo.encode()
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    model = _model(handler)
+
+    with pytest.raises(AdapterUnavailable) as exc_info:
+        list(model.generate_stream([Message(role="user", content="hi")]))
+
+    assert secret_prompt_echo not in str(exc_info.value)
+
+
+def test_generate_stream_connect_error_raises_adapter_unavailable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    model = _model(handler)
+
+    with pytest.raises(AdapterUnavailable):
+        list(model.generate_stream([Message(role="user", content="hi")]))
+
+
+def test_generate_stream_read_timeout_raises_adapter_timeout() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("read timed out", request=request)
+
+    model = _model(handler)
+
+    with pytest.raises(AdapterTimeout):
+        list(model.generate_stream([Message(role="user", content="hi")]))
+
+
+# --------------------------------------------------------- on_thinking (ADR-015)
+# The adapter never yields `thinking` from the iterator (asserted above); these
+# cover the separate `on_thinking` callback that receives it instead.
+
+
+def test_generate_stream_thinking_chunk_calls_on_thinking_and_yields_nothing() -> None:
+    body = _ndjson(
+        {"message": {"thinking": "let me consider this"}, "done": False},
+        {"message": {"content": "answer"}, "done": True},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    model = _model(handler)
+    seen: list[str] = []
+    chunks = list(
+        model.generate_stream(
+            [Message(role="user", content="hi")], on_thinking=seen.append
+        )
+    )
+
+    assert chunks == ["answer"]
+    assert seen == ["let me consider this"]
+
+
+def test_generate_stream_chunk_with_both_fields_yields_only_content() -> None:
+    body = _ndjson(
+        {
+            "message": {"thinking": "hmm", "content": "par"},
+            "done": False,
+        },
+        {"message": {"content": "tial"}, "done": True},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    model = _model(handler)
+    seen: list[str] = []
+    chunks = list(
+        model.generate_stream(
+            [Message(role="user", content="hi")], on_thinking=seen.append
+        )
+    )
+
+    assert chunks == ["par", "tial"]
+    assert seen == ["hmm"]
+
+
+def test_generate_stream_with_no_callback_drops_thinking_silently() -> None:
+    body = _ndjson(
+        {"message": {"thinking": "reasoning nobody asked for"}, "done": False},
+        {"message": {"content": "answer"}, "done": True},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    model = _model(handler)
+
+    # No on_thinking passed at all -- must not raise, must not yield thinking.
+    chunks = list(model.generate_stream([Message(role="user", content="hi")]))
+
+    assert chunks == ["answer"]
+
+
+def test_generate_stream_thinking_never_reaches_a_log_record(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # DESIGN section 7 excludes model output from logs, and reasoning is model
+    # output (ADR-015). The CLI may print it to a terminal, but the adapter
+    # itself must never let it reach `log_event`.
+    secret_reasoning = "this reasoning text must never reach a log record"
+    body = _ndjson(
+        {"message": {"thinking": secret_reasoning}, "done": False},
+        {"message": {"content": "answer"}, "done": True},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    model = _model(handler)
+
+    with caplog.at_level(logging.INFO, logger="ponzu.llm.ollama"):
+        list(
+            model.generate_stream(
+                [Message(role="user", content="hi")], on_thinking=lambda _f: None
+            )
+        )
+
+    assert secret_reasoning not in caplog.text
+    for record in caplog.records:
+        fields = getattr(record, "ponzu_fields", None) or {}
+        assert secret_reasoning not in str(fields)
+
+
+def test_generate_stream_logs_counts_not_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    body = _ndjson(
+        {"message": {"content": "ABCDE"}, "done": False},
+        {"message": {"content": "FGHIJ"}, "done": True},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    model = _model(handler)
+
+    with caplog.at_level(logging.INFO, logger="ponzu.llm.ollama"):
+        list(model.generate_stream([Message(role="user", content="a secret prompt")]))
+
+    record = next(
+        r for r in caplog.records if getattr(r, "ponzu_event", None) == "llm_stream"
+    )
+    assert record.ponzu_fields["message_count"] == 2
+    assert record.ponzu_fields["output_chars"] == 10
+    assert record.ponzu_fields["model"] == "qwen3:30b"
+    assert "duration_ms" in record.ponzu_fields
+    assert "a secret prompt" not in caplog.text
+    assert "ABCDE" not in caplog.text
+    assert "FGHIJ" not in caplog.text

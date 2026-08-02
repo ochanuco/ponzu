@@ -36,6 +36,9 @@ _AUDIO_REMEDY = "install with: uv sync --extra audio"
 # check and both timeouts (silence / max window) to be evaluated regularly.
 _CHUNK_MS = 30
 
+# Poll interval when the device has not yet delivered a full chunk.
+_POLL_S = 0.005
+
 # Same RMS floor rationale as `ponzu.audio.capture._SILENCE_RMS_THRESHOLD`:
 # comfortably above typical room-noise RMS, comfortably below a spoken
 # syllable, for 16-bit signed PCM (full scale 32767).
@@ -44,7 +47,11 @@ _SILENCE_RMS_THRESHOLD = 400.0
 # How long `stop()` waits for the capture thread to notice the stop event
 # and exit before giving up -- kept small and constant so `stop()` can never
 # hang a caller, matching `KeyboardWakeWord`.
-_JOIN_TIMEOUT_S = 1.0
+# Long enough to cover a slow CoreAudio stream close, not merely long enough
+# for the loop to notice `_stop_event` (ADR-010). Returning while the thread is
+# still inside PortAudio lets the interpreter reach `Pa_Terminate` from atexit
+# and deadlock against it -- daemon threads keep running until then.
+_JOIN_TIMEOUT_S = 10.0
 
 # Japanese and ASCII punctuation stripped before comparing a transcript to a
 # configured variant -- a real transcription of a two-syllable phrase is
@@ -158,8 +165,14 @@ class WhisperWakeWord:
 
         # A separate, cheap model from `stt.model` (ADR-013), and always
         # Japanese -- the wake phrase is fixed regardless of `stt.language`.
+        # No `initial_prompt`: measured, it does not help here. A two-mora
+        # phrase in isolation gives the bias nothing to act on -- `ぽんず` still
+        # comes back as `コンズ` with it set (DESIGN section 4.4).
         gate_stt_config = SttConfig(
-            provider="faster_whisper", model=config.model, language="ja"
+            provider="faster_whisper",
+            model=config.model,
+            language="ja",
+            initial_prompt="",
         )
         self._recognizer = WhisperRecognizer(gate_stt_config, logger=self._logger)
 
@@ -191,6 +204,12 @@ class WhisperWakeWord:
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=_JOIN_TIMEOUT_S)
+            if self._thread.is_alive():
+                # Exiting now risks the ADR-010 deadlock. Nothing here can
+                # force the thread to finish, but this is the one moment where
+                # saying so costs nothing and diagnosing it later costs a
+                # native stack dump.
+                log_event(self._logger, "wake_gate_join_timeout")
 
     @property
     def is_running(self) -> bool:
@@ -275,12 +294,27 @@ class WhisperWakeWord:
             # `ponzu.audio.capture`: summing `_CHUNK_MS` assumes every read
             # returns on time, and a device delivering slower than real time
             # makes the window run far past `max_window_ms`.
-            started_at = time.monotonic()
+            # Started when speech does, NOT when the loop does. This loop
+            # idles in silence for as long as nobody is talking, so a
+            # reference taken up front measures the wait, not the window --
+            # after a minute of quiet the budget below was already blown and
+            # the first speech chunk closed the window instantly, producing
+            # 30 ms of audio and a gate that never fired again.
+            window_started_at: float | None = None
             while not self._stop_event.is_set():
+                # See `ponzu.audio.capture`: a bare `read()` blocks with no
+                # timeout, so a device that stops delivering would also stop
+                # this loop from ever noticing `_stop_event` -- the detector
+                # would ignore `stop()` and the process would not exit.
+                if stream.read_available < chunk_frames:
+                    time.sleep(_POLL_S)
+                    continue
                 data, _overflowed = stream.read(chunk_frames)
                 pcm_chunk = bytes(data)
 
                 if _rms(pcm_chunk) >= _SILENCE_RMS_THRESHOLD:
+                    if not speech_started:
+                        window_started_at = time.monotonic()
                     speech_started = True
                     silence_ms = 0
                 elif not speech_started:
@@ -297,7 +331,11 @@ class WhisperWakeWord:
                     break
                 if window_ms >= self._config.max_window_ms:
                     break
-                if (time.monotonic() - started_at) * 1000 >= self._config.max_window_ms:
+                if (
+                    window_started_at is not None
+                    and (time.monotonic() - window_started_at) * 1000
+                    >= self._config.max_window_ms
+                ):
                     break
         # Stream is closed at this point (the `with` block has exited) --
         # transcription below never runs while the mic is still open.

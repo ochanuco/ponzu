@@ -32,6 +32,10 @@ _SILENCE_RMS_THRESHOLD = 400.0
 # (max duration / trailing silence) are evaluated on a regular cadence.
 _CHUNK_MS = 30
 
+# How long to wait before re-checking whether the device has delivered more
+# frames. Short enough not to add audible latency, long enough not to spin.
+_POLL_S = 0.005
+
 
 def _wall_ms(since: float) -> int:
     """Milliseconds of real time since `since` (a `time.monotonic()` value)."""
@@ -69,7 +73,11 @@ class MicrophoneInput:
         return sd
 
     def capture_utterance(
-        self, *, max_duration_ms: int, silence_timeout_ms: int
+        self,
+        *,
+        max_duration_ms: int,
+        silence_timeout_ms: int,
+        speech_start_timeout_ms: int | None = None,
     ) -> AudioBuffer:
         """Record until speech ends or `max_duration_ms` elapses (base.py).
 
@@ -78,6 +86,11 @@ class MicrophoneInput:
         started. If speech never started, nothing was meaningfully captured
         (base.py: a recoverable outcome, not an error), so an empty buffer
         is returned rather than raw room-noise silence.
+
+        `speech_start_timeout_ms`, when given, overrides how long to wait for
+        speech to *begin* instead of `self._config.speech_start_timeout_ms` --
+        ADR-015's follow-up window passes `audio.follow_up_ms` here so a
+        follow-up capture gives up sooner than a fresh wake-word turn would.
         """
         sd = self._import_sounddevice()
 
@@ -98,7 +111,11 @@ class MicrophoneInput:
             dtype="int16",
             device=self._config.input_device,
         ) as stream:
-            start_timeout_ms = self._config.speech_start_timeout_ms
+            start_timeout_ms = (
+                speech_start_timeout_ms
+                if speech_start_timeout_ms is not None
+                else self._config.speech_start_timeout_ms
+            )
             started_at = time.monotonic()
             # Two clocks, and the deadline is whichever expires first.
             #
@@ -115,6 +132,15 @@ class MicrophoneInput:
             while elapsed_ms < max_duration_ms and _wall_ms(started_at) < (
                 max_duration_ms
             ):
+                # `read()` blocks until the frames arrive, with no timeout --
+                # and if the device stops delivering it never returns, so
+                # neither clock above is ever consulted again. That is a hang,
+                # not a slow turn: observed sitting in LISTENING until Ctrl-C.
+                # Waiting only when data is actually available keeps the loop
+                # bounded no matter what the device does.
+                if stream.read_available < chunk_frames:
+                    time.sleep(_POLL_S)
+                    continue
                 data, _overflowed = stream.read(chunk_frames)
                 pcm_chunk = bytes(data)
                 chunks.append(pcm_chunk)

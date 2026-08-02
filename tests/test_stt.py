@@ -49,7 +49,10 @@ def _fake_faster_whisper(
             self.model_ref = model_ref
             self.download_root = download_root
 
-        def transcribe(self, samples, language=None):
+        def transcribe(self, samples, language=None, initial_prompt=None):
+            # Recorded so a test can assert the vocabulary bias is actually
+            # forwarded (DESIGN section 4.4), not silently dropped.
+            self.last_initial_prompt = initial_prompt
             return (
                 iter(_Segment(text, avg_logprob) for text, avg_logprob in segments),
                 _Info(detected_language),
@@ -91,7 +94,12 @@ def _fake_numpy():
 
 
 def _config(**overrides) -> SttConfig:
-    base = {"provider": "whisper_cpp", "model": "tiny", "language": "ja"}
+    base = {
+        "provider": "faster_whisper",
+        "model": "tiny",
+        "language": "ja",
+        "initial_prompt": "",
+    }
     base.update(overrides)
     return SttConfig(**base)
 
@@ -281,3 +289,35 @@ def test_probe_ok_when_model_is_an_existing_local_path(monkeypatch, tmp_path) ->
     result = WhisperRecognizer(_config(model=str(model_path))).probe()
 
     assert result.status == "ok"
+
+
+def test_initial_prompt_is_forwarded_to_the_backend(monkeypatch) -> None:
+    """DESIGN section 4.4: the vocabulary bias must actually reach the model.
+
+    Without it, "うば茶" came back as "うばちゃん" and the assistant then
+    confidently corrected the user's spelling.
+    """
+    from ponzu.stt.whisper import WhisperRecognizer
+
+    fake = _fake_faster_whisper([("うば茶", -0.3)], "ja")
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake)
+    monkeypatch.setitem(sys.modules, "numpy", _fake_numpy())
+
+    recognizer = WhisperRecognizer(_config(initial_prompt="うば茶、ぽんず"))
+    recognizer.transcribe(AudioBuffer(pcm=b"\x00\x01" * 100, sample_rate=16000))
+
+    assert recognizer._model.last_initial_prompt == "うば茶、ぽんず"
+
+
+def test_empty_initial_prompt_becomes_none(monkeypatch) -> None:
+    """faster-whisper expects None for "no bias", not an empty string."""
+    from ponzu.stt.whisper import WhisperRecognizer
+
+    fake = _fake_faster_whisper([("ok", -0.3)], "ja")
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake)
+    monkeypatch.setitem(sys.modules, "numpy", _fake_numpy())
+
+    recognizer = WhisperRecognizer(_config(initial_prompt=""))
+    recognizer.transcribe(AudioBuffer(pcm=b"\x00\x01" * 100, sample_rate=16000))
+
+    assert recognizer._model.last_initial_prompt is None

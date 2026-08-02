@@ -8,9 +8,10 @@ conversation memory are explicitly out of scope here (DESIGN section 4.5
 
 from __future__ import annotations
 
+import json
 import logging
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Iterator
 
 import httpx
 
@@ -104,6 +105,109 @@ class OllamaLanguageModel:
         )
 
         return ModelResponse(text=text, model=model, duration_ms=duration_ms)
+
+    def generate_stream(
+        self,
+        messages: Iterable[Message],
+        *,
+        timeout_s: float | None = None,
+        on_thinking: Callable[[str], None] | None = None,
+    ) -> Iterator[str]:
+        """Yield `message.content` fragments as Ollama streams them (ADR-014).
+
+        Ollama's streaming `/api/chat` response is newline-delimited JSON, one
+        object per line, each carrying an incremental `message`. `think: false`
+        is not set (ADR-009 / ADR-012): this model separates its reasoning into
+        a `thinking` field, and a chunk that carries only `thinking` must yield
+        nothing rather than falling back to it, or the assistant would speak
+        its reasoning aloud.
+
+        ADR-015: a chunk's `thinking` fragment, if present and non-empty, goes
+        to `on_thinking` instead -- still never yielded. This adapter stays
+        transport-only (ADR-005): it forwards what the backend sent and
+        interprets nothing.
+        """
+        payload_messages = [
+            {"role": message.role, "content": message.content} for message in messages
+        ]
+        payload = {
+            "model": self._config.model,
+            "messages": payload_messages,
+            "stream": True,
+        }
+        effective_timeout = (
+            timeout_s if timeout_s is not None else self._config.timeout_s
+        )
+
+        start = time.monotonic()
+        message_count = 0
+        output_chars = 0
+        model_name = self._config.model
+
+        try:
+            with self._client.stream(
+                "POST",
+                f"{self._config.endpoint}/api/chat",
+                json=payload,
+                timeout=effective_timeout,
+            ) as response:
+                if not response.is_success:
+                    # Status code only -- same rule as `generate` (DESIGN
+                    # section 7).
+                    raise AdapterUnavailable(
+                        f"Ollama returned HTTP {response.status_code} for "
+                        f"{self._config.endpoint}/api/chat"
+                    )
+
+                for line in response.iter_lines():
+                    if not line.strip():
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except ValueError as exc:
+                        # A malformed NDJSON line must not kill the stream with
+                        # a raw ValueError, and the line itself (which may echo
+                        # prompt content) must never reach the exception
+                        # message (DESIGN section 7).
+                        raise AdapterUnavailable(
+                            f"Ollama at {self._config.endpoint} sent a "
+                            "malformed stream chunk"
+                        ) from exc
+
+                    message_count += 1
+                    model_name = data.get("model", model_name)
+                    message = data.get("message") or {}
+                    is_message_dict = isinstance(message, dict)
+                    content = message.get("content") if is_message_dict else None
+                    if content:
+                        output_chars += len(content)
+                        yield content
+
+                    thinking = message.get("thinking") if is_message_dict else None
+                    if thinking and on_thinking is not None:
+                        on_thinking(thinking)
+
+                    if data.get("done"):
+                        break
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise AdapterUnavailable(
+                f"Ollama is not reachable at {self._config.endpoint}. "
+                "Start it with `ollama serve`."
+            ) from exc
+        except (httpx.ReadTimeout, httpx.TimeoutException) as exc:
+            raise AdapterTimeout(
+                f"Ollama at {self._config.endpoint} did not respond in time."
+            ) from exc
+
+        duration_ms = int((time.monotonic() - start) * 1000)
+        log_event(
+            _logger,
+            "llm_stream",
+            model=model_name,
+            duration_ms=duration_ms,
+            message_count=message_count,
+            output_chars=output_chars,
+        )
 
     def probe(self) -> ProbeResult:
         """`ponzu doctor` check (ADR-011). Never raises."""

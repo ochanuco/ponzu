@@ -51,6 +51,14 @@ def _fake_input_sounddevice(read_chunks):
         def __exit__(self, exc_type, exc, tb):
             return False
 
+        @property
+        def read_available(self):
+            # The real RawInputStream reports how many frames can be read
+            # without blocking; the adapters poll it so a stalled device
+            # cannot wedge the loop. A fake that omitted it would let that
+            # polling regress unnoticed.
+            return 1 << 30
+
         def read(self, frames):
             calls.append(frames)
             return read_chunks(frames), False
@@ -167,6 +175,7 @@ def _config(**overrides) -> AudioConfig:
         "max_utterance_ms": 10000,
         "silence_timeout_ms": 1200,
         "speech_start_timeout_ms": 2500,
+        "follow_up_ms": 4000,
     }
     base.update(overrides)
     return AudioConfig(**base)
@@ -384,3 +393,75 @@ def test_capture_gives_up_when_speech_never_starts(monkeypatch) -> None:
     # 600ms / 30ms chunks == 20 reads, not the 333 that max_duration would take.
     assert len(fake_sd.calls) == 20
     assert buffer.pcm == b""  # speech never started, so nothing is returned
+
+
+def test_speech_start_timeout_ms_override_wins_over_the_configured_default(
+    monkeypatch,
+) -> None:
+    """ADR-015: the follow-up window passes its own budget per call.
+
+    The configured default (2500ms here) would allow far more reads than the
+    override below -- proving the call-time value is what actually governed
+    the wait, not `AudioConfig.speech_start_timeout_ms`.
+    """
+    from ponzu.audio.capture import MicrophoneInput
+
+    fake_sd = _fake_input_sounddevice(lambda frames: _silent_pcm(frames))
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    mic = MicrophoneInput(_config(speech_start_timeout_ms=2500))
+    buffer = mic.capture_utterance(
+        max_duration_ms=10_000, silence_timeout_ms=1200, speech_start_timeout_ms=300
+    )
+
+    # 300ms / 30ms chunks == 10 reads, not the 84 the 2500ms default allows.
+    assert len(fake_sd.calls) == 10
+    assert buffer.pcm == b""
+
+
+def _stalled_sounddevice():
+    """Fake device that opens fine and then never delivers a single frame."""
+    module = types.ModuleType("sounddevice")
+
+    class RawInputStream:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        @property
+        def read_available(self):
+            return 0
+
+        def read(self, frames):  # pragma: no cover - must never be reached
+            raise AssertionError("read() called while nothing was available")
+
+    module.RawInputStream = RawInputStream
+    return module
+
+
+def test_capture_times_out_when_the_device_never_delivers(monkeypatch) -> None:
+    """A stalled device must time out, not hang.
+
+    Regression: `read()` blocks until frames arrive and takes no timeout, so a
+    device that stopped delivering meant neither the audio clock nor the wall
+    clock was ever consulted again. Observed live as LISTENING with no further
+    events until Ctrl-C.
+    """
+    from ponzu.audio.capture import MicrophoneInput
+
+    monkeypatch.setitem(sys.modules, "sounddevice", _stalled_sounddevice())
+
+    mic = MicrophoneInput(_config(speech_start_timeout_ms=200))
+    started = time.monotonic()
+    buffer = mic.capture_utterance(max_duration_ms=400, silence_timeout_ms=100)
+    elapsed_ms = (time.monotonic() - started) * 1000
+
+    assert buffer.pcm == b""
+    # Bounded by the wall clock, since no audio ever arrived to advance the
+    # audio clock. Generous upper bound so the assertion is about not hanging.
+    assert elapsed_ms < 3000
