@@ -427,9 +427,11 @@ Potential future storage:
 have opposite lifetimes, and that a model swap invalidates one and must not
 touch the other.
 
-`persona/` holds **layer 3 only**. Layers 1 and 2 are tracked files in the
-repository (code and a shipped default); these two bundles are runtime data
-that ぽんず writes and that a user may delete outright.
+`persona/` holds **layer 3 only**. What the repository tracks is layer 1's code
+and layer 2's *shipped default*; layer 2's user override lives in `config.yaml`
+here, alongside these bundles, and is runtime configuration like the rest of
+this directory. The bundles differ from it in one way that matters: ぽんず
+writes them, and a user may delete them outright.
 
 Neither is a git repository. Their history lives inside the bundle — lineage
 links for what a belief came from, an optional `log.md` for when it changed —
