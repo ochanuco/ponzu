@@ -291,9 +291,27 @@ proper noun is the failure mode observed in practice — told "うば茶" and gi
 "こっちゃんのうばっちゃん", it replied that this was a typo and stated the
 "correct" spelling, which it had no basis for.
 
+### Persona Memory
+
+ADR-017 splits what ぽんず *is* from what it can look up. The persona side has
+three layers, by who writes them:
+
+```text
+1. identity     code    immutable  the name, and the honesty constraints
+2. character    config  human      tone, speech habits, response limits
+3. relationship store   ぽんず      accumulated, with lineage
+```
+
+Layer 3 is an OKF graph that records how a trait was arrived at, and the system
+prompt is a **projection** compiled from it under a hard character cap. The cap
+belongs to the projection, not the store: the store may grow because it is
+never loaded whole.
+
+Only layers 1 and 2 exist today, as `DEFAULT_PERSONA` in code.
+
 ### Prompt Inputs
 
-- System persona
+- System persona (the projection above)
 - Current user utterance
 - Limited session history
 - Optional skill results
@@ -392,12 +410,18 @@ Potential future storage:
 ~/Library/Application Support/Ponzu/
 ├── config.yaml
 ├── secrets.env
+├── persona/          # OKF bundle: who ぽんず is (ADR-017, survives model swaps)
+├── memory/           # OKF bundle: what ぽんず looked up (ADR-017, rebuildable)
 ├── ponzu.db
 ├── logs/
 ├── cache/
 ├── audio/
 └── models/
 ```
+
+`persona/` and `memory/` are separate on purpose: ADR-017 records that they
+have opposite lifetimes, and that a model swap invalidates one and must not
+touch the other.
 
 ---
 

@@ -184,7 +184,8 @@ SpeechSynthesizer
 AudioInput
 AudioOutput
 Skill
-MemoryStore
+MemoryStore   -- split in two by ADR-017: persona memory and agent memory
+              -- have opposite lifetimes and cannot share one store
 ```
 
 ### Consequences
@@ -765,3 +766,134 @@ weather it still declines rather than inventing one, which is what ruled out
 - Deliberation is gone as well as the wait. If a task later needs it, the
   reasoning variant is one config line away, and that is the trade being made
   knowingly rather than by default.
+
+---
+
+## ADR-017: Persona Memory Is Not Agent Memory
+
+- **Status:** Accepted (design; only the layer split is implementable today)
+- **Decision:** ADR-007's single `MemoryStore` is split in two. What makes
+  ぽんず *ぽんず* is stored, budgeted and compiled differently from what the
+  agent looks things up in. Both use the Open Knowledge Format; only one of
+  them is a graph that reaches the prompt.
+
+### Context
+
+ADR-001 fixed the principle: "the assistant's identity remains ぽんず even if
+its voice changes later." ADR-004 restated it for the voice engine. It has
+never been applied to memory, and ADR-007 lists one `MemoryStore` for both.
+
+This stopped being hypothetical. The default model changed from `qwen3:30b` to
+`qwen3:30b-instruct` (ADR-016). Had embeddings or conversation summaries
+existed, that swap would have invalidated them — while ADR-001 says ぽんず must
+come through it unchanged. One store cannot honour both.
+
+### The distinction
+
+|  | Persona memory | Agent memory |
+| --- | --- | --- |
+| Answers | who ぽんず is | what ぽんず can look up |
+| Voice | first person | third person |
+| Lifetime | outlives the model and the backend | dies with the model that produced it |
+| Losing it | ぽんず becomes someone else | accuracy drops; rebuildable |
+| Reaches the prompt | **always, in full** | only the retrieved slice |
+
+The last row is the whole engineering difference. Agent memory can grow without
+bound because only a slice is ever loaded. Persona memory is the system
+message — it is in every single turn.
+
+That is not a style preference, it is measured. ADR-012 records that the
+persona's response-length constraint is load-bearing for latency, not only for
+tone: without it the same model spent ~35 s reasoning. A persona that
+accumulates freely would make every future turn slower and every instruction in
+it weaker.
+
+### Store and projection
+
+An earlier draft of this decision concluded "persona memory is one file, not a
+graph", reasoning from the prompt budget. That was wrong, and the error is
+worth recording because it is easy to repeat: it conflated **what is stored**
+with **what is loaded**.
+
+The budget applies to what reaches the prompt. It says nothing about what may
+be kept.
+
+```text
+store       OKF graph. Grows. Never loaded whole.
+
+              A ──┐
+                  ├──▶ C          C links back to A and B
+              B ──┘
+
+projection  Compiled from the store. Hard character cap. This is the
+            system message.
+```
+
+Source and build artifact. The projection stays small because it is a
+projection, not because the store is small.
+
+Collapsing A and B into C destructively — which is what the one-file design
+forced — throws away three things:
+
+- **provenance.** Nobody can tell why ぽんず behaves that way.
+- **revisability.** If A turns out to be wrong, nothing points at C.
+- **inspectability.** ROADMAP Phase 4 requires memory be inspectable. For a
+  persona that cannot mean only the conclusions: how ぽんず came to understand
+  itself *is* the character.
+
+Keeping the lineage also changes what forgetting means, for the better:
+
+- **forget** = drop from the projection. The store keeps it, still reachable as
+  provenance. Reversible.
+- **delete** = remove from the store. A privacy operation, and the one ROADMAP
+  Phase 4's deletion requirement is about.
+
+### Format: OKF
+
+Both stores use the [Open Knowledge Format](https://okf.md/spec/) — a directory
+of markdown files with YAML frontmatter, where links between documents form the
+graph.
+
+For persona memory it satisfies the requirements that follow from ADR-001:
+
+1. **Survives implementation changes.** A file of sentences outlives a model
+   swap, a backend swap and a rebuild. An embedding does not.
+2. **Readable and hand-editable.** If ぽんず comes to believe something wrong
+   about itself, fixing it must not require a conversation.
+3. **Links express derivation**, which is exactly the provenance above.
+
+For agent memory OKF is what it was designed for, and it buys something extra:
+`oolong` is already OKF v0.1. A shared substrate means ぽんず can read the
+user's notes without a translation layer, which is what ROADMAP Phase 3's
+"Local notes" needs.
+
+### Layers
+
+Persona memory is three layers, separated by who writes them:
+
+```text
+1. identity     code    immutable  the name, and the honesty constraints
+2. character    config  human      tone, speech habits, response limits
+3. relationship store   ぽんず      accumulated, with lineage, projected
+```
+
+Layer 1 is what ADR-001 protects; it is not a preference, so it stays in code.
+Layer 2 is today's `DEFAULT_PERSONA`, which belongs in configuration so it can
+be changed without a code change. Layer 3 is the OKF graph above.
+
+### Consequences
+
+- `MemoryStore` becomes two interfaces. The test for which side something
+  belongs to: *must it survive a model swap?*
+- Layer 3 is written by the assistant, so it needs ROADMAP Phase 3's skill
+  framework first — DESIGN section 10 makes `local.write` require
+  confirmation. Layers 1 and 2 can be separated without it.
+- The projection needs a compile step, and a cap enforced there rather than at
+  write time.
+- **Writing agent memory into `oolong` would reintroduce the deletion problem.**
+  It is a git repository, so "deleted" memory stays in history — which does not
+  satisfy Phase 4. ぽんず writes to its own bundle under the data directory
+  (ADR-006); `oolong` is read-only to it unless a human commits the change.
+- The vocabulary in `stt.initial_prompt` is **neither** kind of memory. It
+  tunes how ぽんず hears, not what it is or knows, and DESIGN section 4.2
+  already files per-room calibration apart from memory.
