@@ -796,11 +796,14 @@ come through it unchanged. One store cannot honour both.
 | Voice | first person | third person |
 | Lifetime | outlives the model and the backend | dies with the model that produced it |
 | Losing it | ぽんず becomes someone else | accuracy drops; rebuildable |
-| Reaches the prompt | **always, in full** | only the retrieved slice |
+| Reaches the prompt | **the compiled projection, every turn** | only the retrieved slice |
 
 The last row is the whole engineering difference. Agent memory can grow without
-bound because only a slice is ever loaded. Persona memory is the system
-message — it is in every single turn.
+bound because only a retrieved slice is ever loaded. Persona memory's
+*projection* is the system message — it is in every single turn. The store
+behind it is never loaded whole either; the difference is that a projection has
+to stand in for the entire store, where a retrieval only has to answer one
+question.
 
 That is not a style preference, it is measured. ADR-012 records that the
 persona's response-length constraint is load-bearing for latency, not only for
@@ -909,9 +912,30 @@ Persona memory is three layers, separated by who writes them:
 3. relationship store   ぽんず      accumulated, with lineage, projected
 ```
 
+Concretely:
+
+| Layer | Lives in | Tracked by git |
+| --- | --- | --- |
+| 1 identity | `src/ponzu/core/prompt.py` | yes, public repo |
+| 2 character | `config/default.example.yaml`, overridden in the user's `config.yaml` | the default yes; the override no |
+| 3 relationship | `persona/` bundle in the data directory | no |
+
 Layer 1 is what ADR-001 protects; it is not a preference, so it stays in code.
-Layer 2 is today's `DEFAULT_PERSONA`, which belongs in configuration so it can
-be changed without a code change. Layer 3 is the OKF graph above.
+Layer 2 ships a public default and is overridden per user, so it can be changed
+without a code change. Layer 3 is the OKF graph above.
+
+**Today both layers 1 and 2 are one `DEFAULT_PERSONA` constant in code.** That
+is a transitional state, not the design: layer 2 has not been extracted yet.
+
+### Cap behaviour
+
+When the projection reaches its cap, the compile step drops in this order:
+
+1. layer 3 traits, least recently reinforced first
+2. nothing else — layers 1 and 2 are never dropped
+
+Layer 1 carries the honesty constraints, and silently shedding those to make
+room for accumulated character is the one failure mode this must not have.
 
 ### Consequences
 
@@ -922,10 +946,13 @@ be changed without a code change. Layer 3 is the OKF graph above.
   confirmation. Layers 1 and 2 can be separated without it.
 - The projection needs a compile step, and a cap enforced there rather than at
   write time.
-- **Writing agent memory into `oolong` would reintroduce the deletion problem.**
-  It is a git repository, so "deleted" memory stays in history — which does not
-  satisfy Phase 4. ぽんず writes to its own bundle under the data directory
-  (ADR-006); `oolong` is read-only to it unless a human commits the change.
+- **`oolong` is read-only to ぽんず.** Reading it is the point of sharing the
+  format — agent memory can consult the user's notes with no translation layer.
+  Writing to it is what is forbidden, for *either* kind of memory: `oolong` is a
+  git repository, so anything ぽんず put there would survive its own deletion,
+  which Phase 4 does not permit. ぽんず writes only to its own `persona/` and
+  `memory/` bundles under the data directory (ADR-006). A human committing
+  something to `oolong` themselves is a separate act and unaffected.
 - The vocabulary in `stt.initial_prompt` is **neither** kind of memory. It
   tunes how ぽんず hears, not what it is or knows, and DESIGN section 4.2
   already files per-room calibration apart from memory.

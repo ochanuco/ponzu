@@ -305,9 +305,13 @@ three layers, by who writes them:
 Layer 3 is an OKF graph that records how a trait was arrived at, and the system
 prompt is a **projection** compiled from it under a hard character cap. The cap
 belongs to the projection, not the store: the store may grow because it is
-never loaded whole.
+never loaded whole. At the cap the compile step drops layer 3 traits, least
+recently reinforced first; layers 1 and 2 are never dropped, because layer 1
+carries the honesty constraints.
 
-Only layers 1 and 2 exist today, as `DEFAULT_PERSONA` in code.
+Only layers 1 and 2 exist today, and both are currently one `DEFAULT_PERSONA`
+constant in code. ADR-017 puts layer 2 in configuration; extracting it has not
+been done yet.
 
 ### Prompt Inputs
 
@@ -422,6 +426,10 @@ Potential future storage:
 `persona/` and `memory/` are separate on purpose: ADR-017 records that they
 have opposite lifetimes, and that a model swap invalidates one and must not
 touch the other.
+
+`persona/` holds **layer 3 only**. Layers 1 and 2 are tracked files in the
+repository (code and a shipped default); these two bundles are runtime data
+that ぽんず writes and that a user may delete outright.
 
 Neither is a git repository. Their history lives inside the bundle — lineage
 links for what a belief came from, an optional `log.md` for when it changed —
