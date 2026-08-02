@@ -700,3 +700,68 @@ The material to fill that silence already arrives; it was simply discarded.
 - Reasoning on screen is verbose (over 1,000 characters is normal). It is on by
   default because an assistant that looks frozen for ten seconds is the worse
   failure, and it is configurable.
+
+---
+
+## ADR-016: `qwen3:30b-instruct` — Switching Models Instead of Switching Modes
+
+- **Status:** Accepted
+- **Supersedes:** ADR-012's model choice
+- **Decision:** The default becomes **`qwen3:30b-instruct`**, the non-thinking
+  variant of the same 30B-A3B model.
+
+### Context
+
+ADR-014 measured that the reasoning variant produces its entire thinking trace
+before the first character of an answer exists, so streaming cannot start speech
+any earlier. Qwen3 is designed to switch between thinking and non-thinking modes
+within one model, so the obvious fix was to switch modes per turn — greetings,
+the time, a status check do not need deliberation.
+
+That does not work here, and the reason is Ollama, not Qwen3. Every documented
+placement was measured against a greeting:
+
+| | Time | Thinking | Answer |
+| --- | --- | --- | --- |
+| baseline | 3.9 s | 814 chars | clean |
+| `/no_think` in the user message | 27.4 s | 5,196 chars | clean |
+| `/no_think` at the end of system | 15.7 s | 2,932 chars | clean |
+| `/no_think` at the start of system | 35.3 s | 6,499 chars | clean |
+| Ollama's `think: false` | 19.5 s | 0 chars | **leaks reasoning** |
+
+Reading Ollama's chat template for this model explains all of it: there is no
+`enable_thinking` handling and no `/no_think` handling — only the assembly of a
+`<think>` block. So `/no_think` reaches the model as ordinary text with nothing
+to act on, and `think: false` merely stops Ollama *parsing* the thinking; the
+model still generates it, and with no `<think>` block to land in it appears in
+`content`. That is why the assistant said "Okay, the user said…" out loud.
+
+The switch Qwen3 provides is not reachable through this runtime, so the tag is
+the switch instead.
+
+### Measured
+
+Same persona, same prompts, warm model:
+
+| | Reasoning variant | `-instruct` |
+| --- | --- | --- |
+| Time to first character (median) | 13.12 s | **0.23 s** |
+| Thinking emitted | 843-7,330 chars | 0 |
+| "今日の天気を教えて" fabricated | 0/5 | **0/5** |
+
+57x faster to first audio with no loss of honesty — asked for the time or the
+weather it still declines rather than inventing one, which is what ruled out
+`qwen2.5:14b` (4 of 5 fabricated a forecast).
+
+### Consequences
+
+- `llm.timeout_s` stays at 120 s. Warm turns are now sub-second, but the ~27 s
+  cold load is unchanged and is what the timeout has to cover.
+- ADR-014's streaming becomes what it was meant to be: with `content` arriving
+  immediately, sentence-level synthesis starts speech almost at once.
+- Visible reasoning (ADR-015) has nothing to display on this model. The feature
+  stays — it costs nothing when no fragments arrive, and it is what makes a
+  reasoning model tolerable if one is ever configured again.
+- Deliberation is gone as well as the wait. If a task later needs it, the
+  reasoning variant is one config line away, and that is the trade being made
+  knowingly rather than by default.

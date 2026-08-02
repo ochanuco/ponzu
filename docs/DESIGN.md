@@ -562,14 +562,12 @@ Write and high-impact operations should require explicit confirmation.
 | Menu bar UI versus CLI-only MVP | CLI-only for the MVP | ADR-011 |
 | Wake-word engine | Substitute engine initially, behind a stable interface | ADR-010 |
 | STT backend | `faster-whisper`, default model size `small` | ADR-009 |
-| ~~Default local LLM~~ | reopened — ADR-012's reasoning was refuted by ADR-014's measurements | ADR-014 |
+| Default local LLM | `qwen3:30b-instruct` — 0.23 s to first character | ADR-016 |
 | VOICEVOX speaker | 冥鳴ひまり / ノーマル (style id 14) | section 5.1 |
 | License | MIT | `LICENSE` |
 
 ### Still Open
 
-- Default local LLM. A reasoning model spends ~99% of a turn thinking before
-  emitting any answer, which streaming cannot hide (ADR-014).
 - Packaging and process supervision
 - Short-term context retention policy
 

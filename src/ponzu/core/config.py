@@ -175,11 +175,13 @@ _DEFAULTS: dict[str, Any] = {
     "llm": {
         "provider": "ollama",
         "endpoint": "http://127.0.0.1:11434",
-        "model": "qwen3:30b",
-        # Sized for the cold load, not the steady state. On an M1 Max / 64 GB
-        # the default qwen3:30b takes ~27 s to load 18 GB before answering at
-        # all, then settles at ~4-5 s per warm turn (DESIGN section 11). The
-        # original 30 s could not cover the cold start.
+        # The non-thinking variant of the same 30B-A3B model (ADR-016).
+        # Ollama's template implements no thinking switch, so the reasoning
+        # variant cannot be told to skip it -- a separate tag is the switch.
+        "model": "qwen3:30b-instruct",
+        # Sized for the cold load, not the steady state: ~27 s to load 18 GB
+        # before answering at all. Warm turns are now sub-second (ADR-016), but
+        # the cold start is unchanged and is what this has to cover.
         "timeout_s": 120.0,
     },
     "tts": {

@@ -28,7 +28,9 @@ def test_defaults_load_with_no_file_present(tmp_path: Path) -> None:
     assert config.wake_word.silence_timeout_ms == 600
     assert config.wake_word.variants == ["ぽんず", "ポンズ", "ポン酢", "ぽん酢"]
     assert config.llm.provider == "ollama"
-    assert config.llm.model == "qwen3:30b"
+    # ADR-016: the non-thinking variant. The reasoning one spent 13 s (median)
+    # thinking before the first character of an answer.
+    assert config.llm.model == "qwen3:30b-instruct"
     assert config.privacy.persist_audio is False
     assert config.audio.sample_rate == 16000
     assert config.logging.format == "json"

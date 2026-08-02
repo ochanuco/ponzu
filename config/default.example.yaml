@@ -58,7 +58,10 @@ stt:
 llm:
   provider: "ollama"
   endpoint: "http://127.0.0.1:11434"
-  model: "qwen3:30b"
+  # The non-thinking variant of the same 30B-A3B model. The reasoning variant
+  # spends 13 s (median) thinking before the first character of an answer, and
+  # Ollama implements no way to switch that off -- see ADR-016.
+  model: "qwen3:30b-instruct"
   # Local models can stall; DESIGN section 8 requires recoverable timeout
   # handling rather than hanging in THINKING.
   #
