@@ -184,7 +184,8 @@ SpeechSynthesizer
 AudioInput
 AudioOutput
 Skill
-MemoryStore
+MemoryStore   -- split in two by ADR-017: persona memory and agent memory
+              -- have opposite lifetimes and cannot share one store
 ```
 
 ### Consequences
@@ -765,3 +766,193 @@ weather it still declines rather than inventing one, which is what ruled out
 - Deliberation is gone as well as the wait. If a task later needs it, the
   reasoning variant is one config line away, and that is the trade being made
   knowingly rather than by default.
+
+---
+
+## ADR-017: Persona Memory Is Not Agent Memory
+
+- **Status:** Accepted (design; only the layer split is implementable today)
+- **Decision:** ADR-007's single `MemoryStore` is split in two. What makes
+  ぽんず *ぽんず* is stored, budgeted and compiled differently from what the
+  agent looks things up in. Both use the Open Knowledge Format; only one of
+  them is a graph that reaches the prompt.
+
+### Context
+
+ADR-001 fixed the principle: "the assistant's identity remains ぽんず even if
+its voice changes later." ADR-004 restated it for the voice engine. It has
+never been applied to memory, and ADR-007 lists one `MemoryStore` for both.
+
+This stopped being hypothetical. The default model changed from `qwen3:30b` to
+`qwen3:30b-instruct` (ADR-016). Had embeddings or conversation summaries
+existed, that swap would have invalidated them — while ADR-001 says ぽんず must
+come through it unchanged. One store cannot honour both.
+
+### The distinction
+
+|  | Persona memory | Agent memory |
+| --- | --- | --- |
+| Answers | who ぽんず is | what ぽんず can look up |
+| Voice | first person | third person |
+| Lifetime | outlives the model and the backend | dies with the model that produced it |
+| Losing it | ぽんず becomes someone else | accuracy drops; rebuildable |
+| Reaches the prompt | **the compiled projection, every turn** | only the retrieved slice |
+
+The last row is the whole engineering difference. Agent memory can grow without
+bound because only a retrieved slice is ever loaded. Persona memory's
+*projection* is the system message — it is in every single turn. The store
+behind it is never loaded whole either; the difference is that a projection has
+to stand in for the entire store, where a retrieval only has to answer one
+question.
+
+That is not a style preference, it is measured. ADR-012 records that the
+persona's response-length constraint is load-bearing for latency, not only for
+tone: without it the same model spent ~35 s reasoning. A persona that
+accumulates freely would make every future turn slower and every instruction in
+it weaker.
+
+### Store and projection
+
+An earlier draft of this decision concluded "persona memory is one file, not a
+graph", reasoning from the prompt budget. That was wrong, and the error is
+worth recording because it is easy to repeat: it conflated **what is stored**
+with **what is loaded**.
+
+The budget applies to what reaches the prompt. It says nothing about what may
+be kept.
+
+```text
+store       OKF graph. Grows. Never loaded whole.
+
+              A ──┐
+                  ├──▶ C          C links back to A and B
+              B ──┘
+
+projection  Compiled from the store. Hard character cap. This is the
+            system message.
+```
+
+Source and build artifact. The projection stays small because it is a
+projection, not because the store is small.
+
+Collapsing A and B into C destructively — which is what the one-file design
+forced — throws away three things:
+
+- **provenance.** Nobody can tell why ぽんず behaves that way.
+- **revisability.** If A turns out to be wrong, nothing points at C.
+- **inspectability.** ROADMAP Phase 4 requires memory be inspectable. For a
+  persona that cannot mean only the conclusions: how ぽんず came to understand
+  itself *is* the character.
+
+Keeping the lineage also changes what forgetting means, for the better:
+
+- **forget** = drop from the projection. The store keeps it, still reachable as
+  provenance. Reversible.
+- **delete** = remove from the store. A privacy operation, and the one ROADMAP
+  Phase 4's deletion requirement is about.
+
+### Format: OKF
+
+Both stores use the [Open Knowledge Format](https://okf.md/spec/) — a directory
+of markdown files with YAML frontmatter, where links between documents form the
+graph.
+
+For persona memory it satisfies the requirements that follow from ADR-001:
+
+1. **Survives implementation changes.** A file of sentences outlives a model
+   swap, a backend swap and a rebuild. An embedding does not.
+2. **Readable and hand-editable.** If ぽんず comes to believe something wrong
+   about itself, fixing it must not require a conversation.
+3. **Links express derivation**, which is exactly the provenance above.
+
+For agent memory OKF is what it was designed for, and it buys something extra:
+`oolong` is already OKF v0.1. A shared substrate means ぽんず can read the
+user's notes without a translation layer, which is what ROADMAP Phase 3's
+"Local notes" needs.
+
+### Layer 3 is not version controlled
+
+Git is the obvious reflex for something you do not want to lose, and it is the
+wrong tool here. Listing what layer 3 actually needs:
+
+| Requirement | Needs git? |
+| --- | --- |
+| Readable and hand-editable | no — they are just files |
+| Provenance | no — the OKF links carry it |
+| Revisable | no — same |
+| Survives a rebuild | no — that is *backup*, not version control |
+| Deletion actually deletes | **git actively prevents this** |
+
+The only thing git adds is a chronological history, and that is precisely what
+conflicts with ROADMAP Phase 4's deletion requirement: a "deleted" memory stays
+in the history.
+
+It is not even the better history. Git records *when* something changed; the
+lineage links record *what it came from*. To understand how ぽんず developed,
+following `C → A, B` beats reading a commit log — the graph is a semantic
+history rather than a chronological one.
+
+Where a timeline genuinely helps, OKF already has the convention: an optional
+`log.md` in the bundle. Unlike git history, it can be deleted.
+
+So layer 3 lives in the data directory as a plain OKF bundle with no repository
+of its own. Losing it on a rebuild is a backup problem, and backup is the right
+tool for it.
+
+Layers 1 and 2 stay in the public repository, where git is doing its actual job
+on code and shipped defaults.
+
+### Layers
+
+Persona memory is three layers, separated by who writes them:
+
+```text
+1. identity     code    immutable  the name, and the honesty constraints
+2. character    config  human      tone, speech habits, response limits
+3. relationship store   ぽんず      accumulated, with lineage, projected
+```
+
+Concretely:
+
+| Layer | Lives in | Tracked by git |
+| --- | --- | --- |
+| 1 identity | `src/ponzu/core/prompt.py` | yes, public repo |
+| 2 character | `config/default.example.yaml`, overridden in the user's `config.yaml` | the default yes; the override no |
+| 3 relationship | `persona/` bundle in the data directory | no |
+
+Layer 1 is what ADR-001 protects; it is not a preference, so it stays in code.
+Layer 2 ships a public default and is overridden per user, so it can be changed
+without a code change. Layer 3 is the OKF graph above.
+
+**Today both layers 1 and 2 are one `DEFAULT_PERSONA` constant in code.** That
+is a transitional state, not the design: layer 2 has not been extracted yet.
+
+### Cap behaviour
+
+When the projection reaches its cap, the compile step drops in this order:
+
+1. layer 3 traits, least recently reinforced first
+2. nothing else — layers 1 and 2 are never dropped
+
+Layer 1 carries the honesty constraints, and silently shedding those to make
+room for accumulated character is the one failure mode this must not have.
+
+### Consequences
+
+- `MemoryStore` becomes two interfaces. The test for which side something
+  belongs to: *must it survive a model swap?*
+- Layer 3 is written by the assistant, so it needs ROADMAP Phase 3's skill
+  framework first — DESIGN section 10 makes `local.write` require
+  confirmation. Layers 1 and 2 can be separated without it.
+- The projection needs a compile step, and a cap enforced there rather than at
+  write time.
+- **`oolong` is read-only to ぽんず.** Reading it is the point of sharing the
+  format — agent memory can consult the user's notes with no translation layer.
+  Writing to it is what is forbidden, for *either* kind of memory: `oolong` is a
+  git repository, so anything ぽんず put there would survive its own deletion,
+  which Phase 4 does not permit. ぽんず writes only to its own `persona/` and
+  `memory/` bundles under the data directory (ADR-006). A human committing
+  something to `oolong` themselves is a separate act and unaffected.
+- The vocabulary in `stt.initial_prompt` is **neither** kind of memory. It
+  tunes how ぽんず hears, not what it is or knows, and DESIGN section 4.2
+  already files per-room calibration apart from memory.

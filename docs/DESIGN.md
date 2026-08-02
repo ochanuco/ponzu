@@ -291,9 +291,31 @@ proper noun is the failure mode observed in practice — told "うば茶" and gi
 "こっちゃんのうばっちゃん", it replied that this was a typo and stated the
 "correct" spelling, which it had no basis for.
 
+### Persona Memory
+
+ADR-017 splits what ぽんず *is* from what it can look up. The persona side has
+three layers, by who writes them:
+
+```text
+1. identity     code    immutable  the name, and the honesty constraints
+2. character    config  human      tone, speech habits, response limits
+3. relationship store   ぽんず      accumulated, with lineage
+```
+
+Layer 3 is an OKF graph that records how a trait was arrived at, and the system
+prompt is a **projection** compiled from it under a hard character cap. The cap
+belongs to the projection, not the store: the store may grow because it is
+never loaded whole. At the cap the compile step drops layer 3 traits, least
+recently reinforced first; layers 1 and 2 are never dropped, because layer 1
+carries the honesty constraints.
+
+Only layers 1 and 2 exist today, and both are currently one `DEFAULT_PERSONA`
+constant in code. ADR-017 puts layer 2 in configuration; extracting it has not
+been done yet.
+
 ### Prompt Inputs
 
-- System persona
+- System persona (the projection above)
 - Current user utterance
 - Limited session history
 - Optional skill results
@@ -392,12 +414,29 @@ Potential future storage:
 ~/Library/Application Support/Ponzu/
 ├── config.yaml
 ├── secrets.env
+├── persona/          # OKF bundle: who ぽんず is (ADR-017, survives model swaps)
+├── memory/           # OKF bundle: what ぽんず looked up (ADR-017, rebuildable)
 ├── ponzu.db
 ├── logs/
 ├── cache/
 ├── audio/
 └── models/
 ```
+
+`persona/` and `memory/` are separate on purpose: ADR-017 records that they
+have opposite lifetimes, and that a model swap invalidates one and must not
+touch the other.
+
+`persona/` holds **layer 3 only**. What the repository tracks is layer 1's code
+and layer 2's *shipped default*; layer 2's user override lives in `config.yaml`
+here, alongside these bundles, and is runtime configuration like the rest of
+this directory. The bundles differ from it in one way that matters: ぽんず
+writes them, and a user may delete them outright.
+
+Neither is a git repository. Their history lives inside the bundle — lineage
+links for what a belief came from, an optional `log.md` for when it changed —
+because ROADMAP Phase 4 requires deletion to actually delete, and git history
+would keep what was deleted. Surviving a rebuild is a backup concern.
 
 ---
 
