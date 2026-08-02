@@ -423,6 +423,11 @@ Potential future storage:
 have opposite lifetimes, and that a model swap invalidates one and must not
 touch the other.
 
+Neither is a git repository. Their history lives inside the bundle — lineage
+links for what a belief came from, an optional `log.md` for when it changed —
+because ROADMAP Phase 4 requires deletion to actually delete, and git history
+would keep what was deleted. Surviving a rebuild is a backup concern.
+
 ---
 
 ## 6. Repository Layout

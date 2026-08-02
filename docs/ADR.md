@@ -867,6 +867,38 @@ For agent memory OKF is what it was designed for, and it buys something extra:
 user's notes without a translation layer, which is what ROADMAP Phase 3's
 "Local notes" needs.
 
+### Layer 3 is not version controlled
+
+Git is the obvious reflex for something you do not want to lose, and it is the
+wrong tool here. Listing what layer 3 actually needs:
+
+| Requirement | Needs git? |
+| --- | --- |
+| Readable and hand-editable | no — they are just files |
+| Provenance | no — the OKF links carry it |
+| Revisable | no — same |
+| Survives a rebuild | no — that is *backup*, not version control |
+| Deletion actually deletes | **git actively prevents this** |
+
+The only thing git adds is a chronological history, and that is precisely what
+conflicts with ROADMAP Phase 4's deletion requirement: a "deleted" memory stays
+in the history.
+
+It is not even the better history. Git records *when* something changed; the
+lineage links record *what it came from*. To understand how ぽんず developed,
+following `C → A, B` beats reading a commit log — the graph is a semantic
+history rather than a chronological one.
+
+Where a timeline genuinely helps, OKF already has the convention: an optional
+`log.md` in the bundle. Unlike git history, it can be deleted.
+
+So layer 3 lives in the data directory as a plain OKF bundle with no repository
+of its own. Losing it on a rebuild is a backup problem, and backup is the right
+tool for it.
+
+Layers 1 and 2 stay in the public repository, where git is doing its actual job
+on code and shipped defaults.
+
 ### Layers
 
 Persona memory is three layers, separated by who writes them:
