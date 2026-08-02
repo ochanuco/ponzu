@@ -432,7 +432,15 @@ class Orchestrator:
             result, pending_idle = self._safe_run_turn_pipeline(speech_start_timeout_ms)
 
             should_continue = (
-                pending_idle
+                # ADR-010: never start another turn once a stop is pending.
+                # This loop runs on the detector thread, so without this check
+                # it kept opening follow-up captures after `run_forever` had
+                # already exited -- each one waiting `follow_up_ms` and then
+                # recording up to `max_utterance_ms`. That outlives `stop()`'s
+                # join and puts a live capture alongside `Pa_Terminate`, which
+                # is exactly the exit deadlock ADR-010 exists to prevent.
+                not self._stop_requested
+                and pending_idle
                 and self._machine.state is State.SPEAKING
                 and result.ok
                 and bool(result.utterance)

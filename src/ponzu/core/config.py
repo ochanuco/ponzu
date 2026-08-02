@@ -111,12 +111,23 @@ class PrivacyConfig:
 class LoggingConfig:
     level: str
     format: str
-    # ADR-015: `qwen3:30b` spends ~99% of a turn on reasoning before the
-    # first character of the answer exists (ADR-014's measurement). Printing
-    # it to the terminal fills that silence; default True because an
-    # assistant that looks frozen for ten seconds is the worse failure. Never
-    # logged regardless of this setting -- DESIGN section 7 excludes model
-    # output from logs, and reasoning is model output.
+
+
+@dataclass(frozen=True, slots=True)
+class UiConfig:
+    """What the terminal shows. Not logging.
+
+    `show_thinking` started out under `logging`, which was misleading:
+    reasoning is never written to a log whatever this says (DESIGN section 7
+    excludes model output), so a `logging` key implying otherwise would send a
+    reader looking in the wrong place. This controls what is printed to a
+    terminal the user is already watching, which is a different act.
+    """
+
+    # ADR-015: a reasoning model spends ~99% of a turn thinking before the
+    # first character of the answer exists (ADR-014). Printing it fills that
+    # silence. Default True because an assistant that looks frozen is the
+    # worse failure.
     show_thinking: bool
 
 
@@ -129,6 +140,7 @@ class Config:
     audio: AudioConfig
     privacy: PrivacyConfig
     logging: LoggingConfig
+    ui: UiConfig
 
 
 # In-code mirror of config/default.example.yaml (DESIGN section 5.1 plus the
@@ -228,10 +240,9 @@ _DEFAULTS: dict[str, Any] = {
         "persist_transcripts": False,
         "persist_conversations": False,
     },
-    "logging": {
-        "level": "info",
-        "format": "json",
-        # ADR-015: on by default -- see LoggingConfig.show_thinking.
+    "logging": {"level": "info", "format": "json"},
+    "ui": {
+        # ADR-015: on by default -- see UiConfig.show_thinking.
         "show_thinking": True,
     },
 }
@@ -398,6 +409,7 @@ def load_config(path: Path | None = None) -> Config:
         audio=AudioConfig(**merged["audio"]),
         privacy=PrivacyConfig(**merged["privacy"]),
         logging=LoggingConfig(**merged["logging"]),
+        ui=UiConfig(**merged["ui"]),
     )
 
 

@@ -38,7 +38,7 @@ def test_defaults_load_with_no_file_present(tmp_path: Path) -> None:
     # with 0; reasoning is printed by default (an assistant that looks frozen
     # for ten seconds is the worse failure).
     assert config.audio.follow_up_ms == 4000
-    assert config.logging.show_thinking is True
+    assert config.ui.show_thinking is True
 
 
 def test_deep_merge_overlays_only_specified_keys(tmp_path: Path) -> None:
@@ -241,16 +241,16 @@ def test_follow_up_ms_rejects_a_non_int_value(tmp_path: Path) -> None:
 
 def test_show_thinking_can_be_disabled(tmp_path: Path) -> None:
     user_config = tmp_path / "config.yaml"
-    user_config.write_text("logging:\n  show_thinking: false\n")
+    user_config.write_text("ui:\n  show_thinking: false\n")
 
     config = load_config(user_config)
 
-    assert config.logging.show_thinking is False
+    assert config.ui.show_thinking is False
 
 
 def test_show_thinking_rejects_a_non_bool_value(tmp_path: Path) -> None:
     user_config = tmp_path / "config.yaml"
-    user_config.write_text("logging:\n  show_thinking: 1\n")
+    user_config.write_text("ui:\n  show_thinking: 1\n")
 
-    with pytest.raises(ConfigError, match="logging.show_thinking"):
+    with pytest.raises(ConfigError, match="ui.show_thinking"):
         load_config(user_config)

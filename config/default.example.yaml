@@ -124,9 +124,9 @@ logging:
   # default -- never raw transcripts, prompts, or audio.
   level: "info"
   format: "json"
-  # ADR-015: print the model's reasoning to the terminal as it streams, so
-  # the assistant doesn't look frozen during the ~99% of a turn qwen3:30b
-  # spends thinking before the first character of its answer (ADR-014).
-  # Never written to the log either way -- DESIGN section 7 excludes model
-  # output from logs, and reasoning is model output.
+
+ui:
+  # Print the model's reasoning to the terminal while it is produced (ADR-015).
+  # Not a logging setting: reasoning is never written to a log whatever this
+  # says (DESIGN section 7). A non-reasoning model simply produces none.
   show_thinking: true

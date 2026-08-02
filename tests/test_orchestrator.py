@@ -838,3 +838,34 @@ def test_follow_up_chain_is_capped_at_max_consecutive_follow_ups() -> None:
     # not one more, even though every capture "heard" more speech.
     assert mic.captures == 1 + _MAX_CONSECUTIVE_FOLLOW_UPS
     assert orch.state is State.IDLE
+
+
+def test_stop_prevents_another_follow_up_turn() -> None:
+    """A pending stop must end the chain, not merely the outer loop.
+
+    Regression: `_on_wake` runs on the detector thread, so after `run_forever`
+    returned this loop kept opening follow-up captures -- each waiting
+    `follow_up_ms` and then recording up to `max_utterance_ms`. That outlives
+    `stop()`'s join and leaves a live capture running alongside `Pa_Terminate`,
+    which is the exit deadlock ADR-010 exists to prevent.
+    """
+    detector = ManualWakeWord()
+    mic = FakeMic()
+    orch = Orchestrator(
+        llm=FakeLLM("はい。"),
+        stt=FakeSTT("こんにちは"),
+        tts=FakeTTS(),
+        audio_in=mic,
+        audio_out=FakeSpeaker(),
+        wake_word=detector,
+        follow_up_ms=4000,
+    )
+    orch.stop()  # as run_forever's finally does on Ctrl-C
+    detector.on_detected(orch._on_wake)
+    detector.start()
+
+    detector.trigger(0.9)
+
+    # The turn already in flight may finish; no NEW capture may be opened for a
+    # follow-up. One capture is the turn itself.
+    assert mic.captures <= 1

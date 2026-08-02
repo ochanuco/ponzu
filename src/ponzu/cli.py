@@ -292,7 +292,7 @@ def _report_turn(result: TurnResult) -> None:
 class _ThinkingPrinter:
     """Streams reasoning fragments to the terminal, dim (ADR-015).
 
-    Subscribed via `Orchestrator.on_thinking` only when `logging.show_thinking`
+    Subscribed via `Orchestrator.on_thinking` only when `ui.show_thinking`
     is true; with it false the CLI does not subscribe at all, so nothing is
     printed and nothing about this class runs.
 
@@ -314,13 +314,17 @@ class _ThinkingPrinter:
 
     def __init__(self) -> None:
         self._open = False
+        # Styling only when a terminal will interpret it. Redirected to a file
+        # or a pipe, the escapes would end up in the content itself.
+        self._styled = sys.stdout.isatty()
 
     def __call__(self, fragment: str) -> None:
         """Registered as the `on_thinking` subscriber; prints one fragment."""
         if not fragment:
             return
         if not self._open:
-            print(self._DIM, end="", flush=True)
+            if self._styled:
+                print(self._DIM, end="", flush=True)
             self._open = True
         print(fragment, end="", flush=True)
 
@@ -332,7 +336,7 @@ class _ThinkingPrinter:
         after the last reasoning fragment.
         """
         if self._open:
-            print(self._RESET, flush=True)
+            print(self._RESET if self._styled else "", flush=True)
             self._open = False
 
 
@@ -398,7 +402,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     # `on_thinking` at all -- there is no adapter-side switch, and the
     # orchestrator forwards fragments regardless of whether anyone is
     # listening, so not subscribing is what "off" means here.
-    thinking_printer = _ThinkingPrinter() if cfg.logging.show_thinking else None
+    thinking_printer = _ThinkingPrinter() if cfg.ui.show_thinking else None
     if thinking_printer is not None:
         orchestrator.on_thinking(thinking_printer)
 
