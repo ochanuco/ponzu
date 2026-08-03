@@ -57,6 +57,25 @@ Start with `doctor`. It probes the config file, microphone, speaker, STT model,
 Ollama, and VOICEVOX independently and reports what is missing, without
 starting the loop.
 
+### Watching the conversation
+
+The console is for logs. To read the conversation instead, either send the logs
+away — they are already on stderr —
+
+```sh
+uv run ponzu start 2>/dev/null
+```
+
+or open the view, which shows both sides with who said what (ADR-018):
+
+```sh
+uv run ponzu start --web       # http://127.0.0.1:8765/
+```
+
+It is read-only, bound to loopback and not configurable otherwise, and keeps
+history in memory only — nothing is written to disk, matching
+`privacy.persist_transcripts`.
+
 `chat` exercises the same orchestration and prompt layer as `start` over stdin
 and stdout, which makes it the fastest way to check that the model and persona
 behave before involving audio. It also takes a single utterance for scripting,

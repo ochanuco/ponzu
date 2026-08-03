@@ -132,6 +132,23 @@ class UiConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class WebConfig:
+    """Read-only conversation view (ADR-018).
+
+    No host key: the ADR is explicit that loopback is not configurable --
+    this serves transcripts of everything said in the room, and a LAN
+    address would publish that to every device in the house. `history` is
+    the in-memory ring buffer's size, in turns; nothing here is ever
+    persisted (DESIGN section 5.1: `privacy.persist_transcripts` defaults
+    false, and this view is a window, not a record).
+    """
+
+    enabled: bool
+    port: int
+    history: int
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     wake_word: WakeWordConfig
     stt: SttConfig
@@ -141,6 +158,7 @@ class Config:
     privacy: PrivacyConfig
     logging: LoggingConfig
     ui: UiConfig
+    web: WebConfig
 
 
 # In-code mirror of config/default.example.yaml (DESIGN section 5.1 plus the
@@ -244,6 +262,15 @@ _DEFAULTS: dict[str, Any] = {
     "ui": {
         # ADR-015: on by default -- see UiConfig.show_thinking.
         "show_thinking": True,
+    },
+    "web": {
+        # ADR-018: off by default -- opening a listening socket is a change
+        # in posture and should be asked for, via this key or `--web`.
+        "enabled": False,
+        "port": 8765,
+        # Ring buffer size, in turns. Bounded so a long-running session does
+        # not grow memory without limit.
+        "history": 50,
     },
 }
 
@@ -410,6 +437,7 @@ def load_config(path: Path | None = None) -> Config:
         privacy=PrivacyConfig(**merged["privacy"]),
         logging=LoggingConfig(**merged["logging"]),
         ui=UiConfig(**merged["ui"]),
+        web=WebConfig(**merged["web"]),
     )
 
 
