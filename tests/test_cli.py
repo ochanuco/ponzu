@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ponzu import cli
-from ponzu.adapters import TurnMetrics
+from ponzu.adapters import AdapterUnavailable, TurnMetrics
 from ponzu.core import paths
 from ponzu.core.orchestrator import TurnResult
 
@@ -27,7 +27,11 @@ class FakeOrchestrator:
         self.run_forever_calls = 0
         self.run_forever_error: Exception | None = None
         self.turn_callback = None
-        self.state_callback = None
+        # A list, not a single slot: the real `Orchestrator.on_state_change`
+        # supports multiple subscribers (`StateMachine._callbacks`), which
+        # ADR-018's web view relies on -- `cmd_start` subscribes both the
+        # terminal cue and the view's `record_state` independently.
+        self.state_callbacks: list = []
         self.thinking_callback = None
 
     def text_turn(self, utterance: str, *, speak: bool = False) -> TurnResult:
@@ -47,7 +51,11 @@ class FakeOrchestrator:
         self.turn_callback = callback
 
     def on_state_change(self, callback) -> None:
-        self.state_callback = callback
+        self.state_callbacks.append(callback)
+
+    def fire_state_change(self, previous, new) -> None:
+        for callback in self.state_callbacks:
+            callback(previous, new)
 
     def on_thinking(self, callback) -> None:
         self.thinking_callback = callback
@@ -469,8 +477,205 @@ def test_start_announces_that_it_is_listening(monkeypatch, tmp_path: Path, capsy
     )
 
     cli.main(["start"])
-    assert fake.state_callback is not None
-    fake.state_callback(State.IDLE, State.LISTENING)
+    assert fake.state_callbacks
+    fake.fire_state_change(State.IDLE, State.LISTENING)
     captured = capsys.readouterr()
 
     assert "listening" in captured.out.lower()
+
+
+# ------------------------------------------------------------------ start --web
+
+
+class FakeConversationView:
+    """Stand-in for `ponzu.web.ConversationView`, injected the same way
+    `FakeOrchestrator` stands in for the real orchestrator.
+
+    The server's own behaviour (HTTP, SSE, escaping, the ring buffer) is
+    covered by tests/test_web_server.py; here the only thing under test is
+    `cmd_start`'s wiring -- the flag/config forcing it on, the URL being
+    printed, `record_turn`/`record_state` being reached, and `stop()` running
+    on every exit path. No real socket is opened.
+    """
+
+    def __init__(self, *, port: int, history: int) -> None:
+        self.port = port
+        self.history = history
+        self.started = False
+        self.stopped = False
+        self.turns: list[tuple[str, str]] = []
+        self.states: list[str] = []
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}/"
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self, timeout: float = 5.0) -> None:
+        self.stopped = True
+
+    def record_turn(self, utterance: str, response: str) -> None:
+        self.turns.append((utterance, response))
+
+    def record_state(self, state: str) -> None:
+        self.states.append(state)
+
+
+def _patch_conversation_view(monkeypatch) -> list[FakeConversationView]:
+    """Patch `cli.ConversationView`, returning the list of instances built."""
+    created: list[FakeConversationView] = []
+
+    def _build(*, port: int, history: int) -> FakeConversationView:
+        view = FakeConversationView(port=port, history=history)
+        created.append(view)
+        return view
+
+    monkeypatch.setattr(cli, "ConversationView", _build)
+    return created
+
+
+def test_start_web_flag_forces_the_view_on_and_prints_its_url(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    _isolate_data_dir(monkeypatch, tmp_path)
+    _pretend_tty(monkeypatch)
+    _pretend_deps_ok(monkeypatch)
+    fake = FakeOrchestrator()
+    fake.run_forever_error = KeyboardInterrupt()
+    monkeypatch.setattr(
+        cli.factory, "build_orchestrator", lambda cfg, *, voice, speak=False: fake
+    )
+    created = _patch_conversation_view(monkeypatch)
+
+    # web.enabled defaults false, so only `--web` should turn this on.
+    exit_code = cli.main(["start", "--web"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert len(created) == 1
+    view = created[0]
+    assert view.port == 8765  # web.port default
+    assert view.started is True
+    assert view.stopped is True  # ADR-010: released on every exit path
+    assert view.url in captured.out
+
+
+def test_start_without_web_flag_or_config_never_touches_the_view(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """With the view disabled, `cmd_start` must behave exactly as before."""
+    _isolate_data_dir(monkeypatch, tmp_path)
+    _pretend_tty(monkeypatch)
+    _pretend_deps_ok(monkeypatch)
+    fake = FakeOrchestrator()
+    fake.run_forever_error = KeyboardInterrupt()
+    monkeypatch.setattr(
+        cli.factory, "build_orchestrator", lambda cfg, *, voice, speak=False: fake
+    )
+    created = _patch_conversation_view(monkeypatch)
+
+    exit_code = cli.main(["start"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert created == []
+    assert "conversation view" not in captured.out
+
+
+def test_start_web_config_key_enables_the_view_with_no_flag(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _isolate_data_dir(monkeypatch, tmp_path)
+    _pretend_tty(monkeypatch)
+    _pretend_deps_ok(monkeypatch)
+    fake = FakeOrchestrator()
+    fake.run_forever_error = KeyboardInterrupt()
+    monkeypatch.setattr(
+        cli.factory, "build_orchestrator", lambda cfg, *, voice, speak=False: fake
+    )
+    created = _patch_conversation_view(monkeypatch)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("web:\n  enabled: true\n  port: 9001\n  history: 7\n")
+
+    exit_code = cli.main(["--config", str(config_path), "start"])
+
+    assert exit_code == 0
+    assert len(created) == 1
+    assert created[0].port == 9001
+    assert created[0].history == 7
+
+
+def test_start_web_records_only_successful_turns_but_always_records_state(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from ponzu.core.state import State
+
+    _isolate_data_dir(monkeypatch, tmp_path)
+    _pretend_tty(monkeypatch)
+    _pretend_deps_ok(monkeypatch)
+    fake = FakeOrchestrator()
+    fake.run_forever_error = KeyboardInterrupt()
+    monkeypatch.setattr(
+        cli.factory, "build_orchestrator", lambda cfg, *, voice, speak=False: fake
+    )
+    created = _patch_conversation_view(monkeypatch)
+
+    cli.main(["start", "--web"])
+    view = created[0]
+
+    assert fake.turn_callback is not None
+    fake.turn_callback(
+        TurnResult(utterance="体重は？", response="86.9キロです", metrics=TurnMetrics())
+    )
+    fake.turn_callback(
+        TurnResult(
+            utterance="failed one",
+            response="",
+            metrics=TurnMetrics(),
+            error="AdapterUnavailable: boom",
+        )
+    )
+    assert view.turns == [("体重は？", "86.9キロです")]  # the failure is not recorded
+
+    assert fake.state_callbacks
+    fake.fire_state_change(State.IDLE, State.LISTENING)
+    assert view.states == ["listening"]
+
+
+def test_start_web_view_start_failure_is_reported_and_orchestrator_never_built(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """A port already in use must not crash `ponzu start`."""
+    _isolate_data_dir(monkeypatch, tmp_path)
+    _pretend_tty(monkeypatch)
+    _pretend_deps_ok(monkeypatch)
+    built: list[object] = []
+    monkeypatch.setattr(
+        cli.factory,
+        "build_orchestrator",
+        lambda cfg, *, voice, speak=False: built.append(1),
+    )
+
+    class _RefusingView(FakeConversationView):
+        def start(self) -> None:
+            raise AdapterUnavailable(
+                "cannot serve the conversation view: port 8765 is already in use"
+            )
+
+    monkeypatch.setattr(
+        cli,
+        "ConversationView",
+        lambda *, port, history: _RefusingView(port=port, history=history),
+    )
+
+    exit_code = cli.main(["start", "--web"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "already in use" in captured.err
+    # The orchestrator was already built before the view failed to start
+    # (`built` has one entry) -- this only checks that the view's own
+    # failure is reported cleanly rather than as an unhandled traceback.
+    assert built == [1]

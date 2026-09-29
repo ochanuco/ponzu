@@ -19,6 +19,7 @@ from ponzu.core.config import Config, ConfigError, load_config, write_default_co
 from ponzu.core.logging import setup_logging
 from ponzu.core.orchestrator import Orchestrator, TurnResult
 from ponzu.core.state import State
+from ponzu.web import ConversationView
 
 __all__ = ["main"]
 
@@ -65,7 +66,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--speak", action="store_true", help="also synthesize and play the reply"
     )
 
-    subparsers.add_parser("start", help="run the full wake-word voice loop")
+    start = subparsers.add_parser("start", help="run the full wake-word voice loop")
+    start.add_argument(
+        "--web",
+        action="store_true",
+        help=(
+            "also serve a read-only conversation view on loopback "
+            "(ADR-018), regardless of config"
+        ),
+    )
 
     return parser
 
@@ -398,6 +407,20 @@ def cmd_start(args: argparse.Namespace) -> int:
         print("Run `ponzu doctor` to check dependencies.", file=sys.stderr)
         return 1
 
+    # ADR-018: `--web` forces the view on regardless of config; `web.enabled`
+    # turns it on with no flag. With it disabled, everything below this block
+    # is skipped and `cmd_start` behaves exactly as it did before the view
+    # existed.
+    view: ConversationView | None = None
+    if args.web or cfg.web.enabled:
+        try:
+            view = ConversationView(port=cfg.web.port, history=cfg.web.history)
+            view.start()
+        except AdapterUnavailable as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(f"conversation view: {view.url}")
+
     # ADR-015: on by default. When disabled, the CLI does not subscribe to
     # `on_thinking` at all -- there is no adapter-side switch, and the
     # orchestrator forwards fragments regardless of whether anyone is
@@ -413,6 +436,11 @@ def cmd_start(args: argparse.Namespace) -> int:
         if thinking_printer is not None:
             thinking_printer.finish()
         _report_turn(result)
+        # ADR-018: only a successful turn's text is shown in the browser; a
+        # failed turn still moves the state machine, which the subscription
+        # below reports on its own.
+        if view is not None and result.ok:
+            view.record_turn(result.utterance, result.response)
 
     # DESIGN section 8 step 2: a failure should produce a message when
     # possible. Without this the terminal shows only a JSON `turn_failed`
@@ -426,6 +454,10 @@ def cmd_start(args: argparse.Namespace) -> int:
     # fires the same cue, so "listening..." prints again with no extra wording
     # needed to say a follow-up is different from a fresh wake.
     orchestrator.on_state_change(_announce_state)
+    if view is not None:
+        orchestrator.on_state_change(
+            lambda _previous, new: view.record_state(new.value)
+        )
 
     try:
         orchestrator.run_forever()
@@ -437,6 +469,13 @@ def cmd_start(args: argparse.Namespace) -> int:
         print("Run `ponzu doctor` to check dependencies.", file=sys.stderr)
         orchestrator.stop()
         return 1
+    finally:
+        # ADR-010's lifecycle lesson: a thread still holding a resource at
+        # exit is how the CoreAudio deadlock happened. This runs on every
+        # exit path -- normal return, KeyboardInterrupt, and
+        # AdapterUnavailable alike -- so Ctrl-C never leaves the socket open.
+        if view is not None:
+            view.stop()
     return 0
 
 

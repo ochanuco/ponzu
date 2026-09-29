@@ -39,6 +39,11 @@ def test_defaults_load_with_no_file_present(tmp_path: Path) -> None:
     # for ten seconds is the worse failure).
     assert config.audio.follow_up_ms == 4000
     assert config.ui.show_thinking is True
+    # ADR-018: off by default -- opening a listening socket is a change in
+    # posture and should be asked for, via this key or `--web`.
+    assert config.web.enabled is False
+    assert config.web.port == 8765
+    assert config.web.history == 50
 
 
 def test_deep_merge_overlays_only_specified_keys(tmp_path: Path) -> None:
@@ -253,4 +258,34 @@ def test_show_thinking_rejects_a_non_bool_value(tmp_path: Path) -> None:
     user_config.write_text("ui:\n  show_thinking: 1\n")
 
     with pytest.raises(ConfigError, match="ui.show_thinking"):
+        load_config(user_config)
+
+
+def test_web_settings_can_be_overridden(tmp_path: Path) -> None:
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text("web:\n  enabled: true\n  port: 9000\n  history: 10\n")
+
+    config = load_config(user_config)
+
+    assert config.web.enabled is True
+    assert config.web.port == 9000
+    assert config.web.history == 10
+
+
+def test_web_host_is_not_a_configurable_key(tmp_path: Path) -> None:
+    """ADR-018: loopback is not configurable -- there is no `web.host` key
+    to override, and a typo'd attempt at one must be rejected like any other
+    unknown key."""
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text('web:\n  host: "0.0.0.0"\n')
+
+    with pytest.raises(ConfigError, match="web.host"):
+        load_config(user_config)
+
+
+def test_web_enabled_rejects_a_non_bool_value(tmp_path: Path) -> None:
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text("web:\n  enabled: 1\n")
+
+    with pytest.raises(ConfigError, match="web.enabled"):
         load_config(user_config)

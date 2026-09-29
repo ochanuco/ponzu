@@ -956,3 +956,65 @@ room for accumulated character is the one failure mode this must not have.
 - The vocabulary in `stt.initial_prompt` is **neither** kind of memory. It
   tunes how ぽんず hears, not what it is or knows, and DESIGN section 4.2
   already files per-room calibration apart from memory.
+
+---
+
+## ADR-018: A Read-Only Web View, on the Standard Library
+
+- **Status:** Accepted
+- **Decision:** `ponzu start` can serve a conversation view on loopback. The
+  console keeps its current job — operational logs — and the browser shows the
+  conversation. Read-only, no new dependency.
+
+### Context
+
+The console currently carries both, and they are different things. Logs are for
+diagnosing; a conversation is for reading. Interleaved they obstruct each other,
+which is what made the console feel like the wrong place for either.
+
+They are in fact already on separate streams — logs go to stderr, the reply to
+stdout — so `ponzu start 2>/dev/null` already isolates the conversation. A
+`--quiet` flag would have formalised that, but it only ever produces a *less
+bad* terminal. Giving the conversation its own surface is the better split, and
+ROADMAP Phase 6 already anticipates it: "these interfaces remain adapters around
+the same core orchestration layer."
+
+Nothing in the core needs to change to allow it. `on_turn`, `on_state_change`
+and `on_thinking` were added for the CLI (ADR-015), and a web view subscribes to
+exactly the same three. That the seams already fit is the evidence that Phase
+6's claim holds.
+
+### Decision
+
+- **Standard library only.** `http.server` plus server-sent events. Two routes,
+  loopback, no input — the surface is small enough that a framework would cost
+  more than it saves, and ADR-009 keeps the base install to `httpx` and
+  `pyyaml`. "Thin" was the requirement, and a dependency is not thin.
+- **Read-only.** It shows the conversation; it does not accept text. `ponzu
+  chat` already covers typed input, and taking input here would mean sessions
+  and a second orchestrator owner.
+- **Both sides are shown.** The user's transcript has never been displayed
+  anywhere — only its character count reaches the log. Showing who said what is
+  the entire point of the view.
+- **Loopback only, not configurable.** DESIGN section 9 asks endpoints to bind
+  loopback where possible; here it is not merely possible, it is required. This
+  serves transcripts of everything said in the room, and binding it to a LAN
+  address would publish that to every device in the house.
+- **Off by default**, enabled by config or `--web`. Opening a listening socket
+  is a change in posture and should be asked for.
+
+### Consequences
+
+- History is an in-memory ring buffer, bounded, and dies with the process.
+  Anything else would be persisting transcripts, which
+  `privacy.persist_transcripts` defaults to false (DESIGN section 5.1). The view
+  is a window, not a record.
+- DESIGN section 7 is unaffected. ADR-015 already drew the line: showing
+  content to a user who is present is not writing it to a log. The same
+  reasoning covers a browser on the same machine.
+- ADR-011's "CLI-only for the MVP" still holds. This is an optional surface
+  beside the CLI, not a replacement, and `ponzu start` without it behaves
+  exactly as before.
+- Serving hand-rolled HTTP is acceptable *because* it is read-only and
+  loopback: two fixed routes, no parameters, no input parsing. Any of those
+  changing would justify revisiting the framework decision.

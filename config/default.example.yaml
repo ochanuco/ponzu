@@ -130,3 +130,18 @@ ui:
   # Not a logging setting: reasoning is never written to a log whatever this
   # says (DESIGN section 7). A non-reasoning model simply produces none.
   show_thinking: true
+
+web:
+  # Read-only conversation view on loopback (ADR-018): `ponzu start` serves a
+  # browser page showing who said what, while the console keeps its own job
+  # of operational logs. Off by default -- opening a listening socket is a
+  # change in posture. Enable here, or pass `--web` for one run.
+  enabled: false
+  # There is deliberately no `host` key: the view is loopback-only and that
+  # is not configurable (ADR-018) -- it serves transcripts of everything
+  # said in the room, and a LAN address would publish that to every device
+  # in the house.
+  port: 8765
+  # Ring buffer size, in turns. In-memory only -- history dies with the
+  # process, the same as `privacy.persist_transcripts` defaulting false.
+  history: 50
