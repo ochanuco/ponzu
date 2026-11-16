@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   ci:
-    uses: ochanuco/.github/.github/workflows/uv.yml@e5102a8ff65b3c15a2afa263d4970dbbe6538862 # v1.1.0
+    uses: ochanuco/.github/.github/workflows/uv.yml@194995de7425c6457f8d802510787afd02ed9235 # v1.7.0
     with:
       runs-on: macos-15 # Apple Silicon, matching the ADR-009 target platform.
       python-version: "3.11"
